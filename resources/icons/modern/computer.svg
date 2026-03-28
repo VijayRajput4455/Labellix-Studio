@@ -1,0 +1,24 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="iconEdge" x1="42" y1="34" x2="212" y2="212" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2FE9F6"/>
+      <stop offset="1" stop-color="#B839FF"/>
+    </linearGradient>
+    <filter id="iconGlow" x="12" y="12" width="232" height="232" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g filter="url(#iconGlow)">
+    <path d="M54 44V198" stroke="url(#iconEdge)" stroke-width="16" stroke-linecap="round"/>
+    <path d="M54 44H198" stroke="url(#iconEdge)" stroke-width="16" stroke-linecap="round"/>
+    <path d="M198 44V168C198 184.569 184.569 198 168 198H54" stroke="url(#iconEdge)" stroke-width="16" stroke-linecap="round"/>
+    <circle cx="54" cy="44" r="12" fill="url(#iconEdge)"/>
+    <circle cx="198" cy="44" r="12" fill="url(#iconEdge)"/>
+    <circle cx="54" cy="198" r="12" fill="url(#iconEdge)"/>
+  </g>
+</svg>

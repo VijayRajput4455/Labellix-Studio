@@ -341,6 +341,92 @@ class TestYOLODatasetSession(unittest.TestCase):
 
             self.assertEqual(result1['exported'], result2['exported'])
 
+    def test_preview_split_without_shuffle_uses_input_order(self):
+        dir_name = os.path.abspath(os.path.dirname(__file__))
+        libs_path = os.path.join(dir_name, '..', 'libs')
+        sys.path.insert(0, libs_path)
+        from yolo_io import YOLODatasetSession
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with open(os.path.join(source_dir, 'classes.txt'), 'w', encoding='utf-8') as classes_file:
+                classes_file.write('cat\n')
+
+            image_paths = []
+            for idx in range(6):
+                image_name = 'img_%02d.jpg' % idx
+                label_name = 'img_%02d.txt' % idx
+                image_path = os.path.join(source_dir, image_name)
+                label_path = os.path.join(source_dir, label_name)
+                with open(image_path, 'wb') as image_file:
+                    image_file.write(b'img')
+                with open(label_path, 'w', encoding='utf-8') as label_file:
+                    label_file.write('0 0.5 0.5 0.1 0.1\n')
+                image_paths.append(image_path)
+
+            session = YOLODatasetSession(source_dir=source_dir, seed=7)
+            preview = session.preview_split(
+                image_paths=image_paths,
+                train_percent=50,
+                test_percent=25,
+                valid_percent=25,
+                skip_unlabeled=True,
+                shuffle=False,
+            )
+
+            split = preview['split_assignment']
+            train_names = [os.path.basename(pair[0]) for pair in split['train']]
+            test_names = [os.path.basename(pair[0]) for pair in split['test']]
+            valid_names = [os.path.basename(pair[0]) for pair in split['valid']]
+
+            self.assertEqual(['img_00.jpg', 'img_01.jpg', 'img_02.jpg'], train_names)
+            self.assertEqual(['img_03.jpg', 'img_04.jpg'], test_names)
+            self.assertEqual(['img_05.jpg'], valid_names)
+
+    def test_preview_split_with_shuffle_changes_order(self):
+        dir_name = os.path.abspath(os.path.dirname(__file__))
+        libs_path = os.path.join(dir_name, '..', 'libs')
+        sys.path.insert(0, libs_path)
+        from yolo_io import YOLODatasetSession
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with open(os.path.join(source_dir, 'classes.txt'), 'w', encoding='utf-8') as classes_file:
+                classes_file.write('cat\n')
+
+            image_paths = []
+            for idx in range(8):
+                image_name = 'img_%02d.jpg' % idx
+                label_name = 'img_%02d.txt' % idx
+                image_path = os.path.join(source_dir, image_name)
+                label_path = os.path.join(source_dir, label_name)
+                with open(image_path, 'wb') as image_file:
+                    image_file.write(b'img')
+                with open(label_path, 'w', encoding='utf-8') as label_file:
+                    label_file.write('0 0.5 0.5 0.1 0.1\n')
+                image_paths.append(image_path)
+
+            session = YOLODatasetSession(source_dir=source_dir, seed=19)
+            no_shuffle = session.preview_split(
+                image_paths=image_paths,
+                train_percent=75,
+                test_percent=25,
+                valid_percent=0,
+                skip_unlabeled=True,
+                shuffle=False,
+            )
+            shuffled = session.preview_split(
+                image_paths=image_paths,
+                train_percent=75,
+                test_percent=25,
+                valid_percent=0,
+                skip_unlabeled=True,
+                shuffle=True,
+            )
+
+            no_shuffle_train = [os.path.basename(pair[0]) for pair in no_shuffle['split_assignment']['train']]
+            shuffled_train = [os.path.basename(pair[0]) for pair in shuffled['split_assignment']['train']]
+
+            self.assertNotEqual(no_shuffle_train, shuffled_train)
+
 
 if __name__ == '__main__':
     unittest.main()

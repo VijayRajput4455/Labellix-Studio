@@ -60,6 +60,7 @@ from libs.yolo_io import TXT_EXT, YOLODatasetSession, YOLODatasetExportError
 from libs.theme_controller import ThemeController
 from libs.training_state_service import TrainingStateService
 from libs.trainDialog import TrainConfigPanel
+from libs.yolo_export_dialog import YOLOExportConfigDialog
 from libs.training_runner import (
     format_command_for_display,
     infer_run_artifacts,
@@ -70,6 +71,113 @@ from libs.ustr import ustr
 from libs.hashableQListWidgetItem import HashableQListWidgetItem
 
 __appname__ = 'Labellix Studio'
+
+
+def iter_app_icon_candidates():
+    """Yield branded icon file paths in priority order."""
+    root_dir = os.path.dirname(__file__)
+    icons_dir = os.path.abspath(os.path.join(root_dir, 'resources', 'icons'))
+    packaging_dir = os.path.join(icons_dir, 'packaging')
+    # icon.png at project root is the primary brand icon.
+    # Keep only safe sizes to avoid oversized _NET_WM_ICON payloads on X11.
+    candidates = [
+        os.path.join(root_dir, 'Futuristic glowing square logo design.png'),
+        os.path.join(packaging_dir, 'labellix-icon-256.png'),
+        os.path.join(packaging_dir, 'labellix-icon-128.png'),
+        os.path.join(packaging_dir, 'labellix-icon-64.png'),
+        os.path.join(packaging_dir, 'labellix-icon-32.png'),
+        os.path.join(icons_dir, 'app.png'),
+    ]
+    for icon_path in candidates:
+        if os.path.exists(icon_path):
+            yield icon_path
+
+
+def get_primary_app_icon_path():
+    for icon_path in iter_app_icon_candidates():
+        return icon_path
+    return None
+
+
+def _round_pixmap(pix, radius_fraction=0.18):
+    """Return a copy of *pix* with rounded corners and a transparent background.
+
+    radius_fraction is the corner radius as a fraction of the shorter side
+    (0.18 ≈ the iOS/macOS app-icon squircle look).
+    """
+    size = pix.size()
+    radius = int(min(size.width(), size.height()) * radius_fraction)
+
+    rounded = QPixmap(size)
+    rounded.fill(Qt.transparent)
+
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, size.width(), size.height(), radius, radius)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, pix)
+    painter.end()
+
+    return rounded
+
+
+def build_app_icon():
+    """Build a multi-resolution app icon for better dock/taskbar support.
+
+    Futuristic glowing square logo design.png is loaded once, scaled to 256x256 to stay within X11 request
+    size limits, rounded corners applied, then smaller sizes are stacked.
+    """
+    icon = QIcon()
+    root_icon = os.path.join(os.path.dirname(__file__), 'Futuristic glowing square logo design.png')
+    if os.path.exists(root_icon):
+        pix = QPixmap(root_icon)
+        if not pix.isNull():
+            # Clamp to 256 px to avoid X11 _NET_WM_ICON payload overflow.
+            if pix.width() > 256 or pix.height() > 256:
+                pix = pix.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            icon.addPixmap(_round_pixmap(pix))
+    for icon_path in iter_app_icon_candidates():
+        # Skip Futuristic glowing square logo design.png — already added above at safe size.
+        if os.path.basename(icon_path) == 'Futuristic glowing square logo design.png':
+            continue
+        icon.addFile(icon_path)
+    if icon.isNull():
+        icon = new_icon('app')
+    return icon
+
+
+def ensure_linux_desktop_entry(icon_path):
+    """Create a user-local desktop entry so Linux docks can resolve the app icon."""
+    if not sys.platform.startswith('linux') or not icon_path:
+        return
+
+    desktop_dir = os.path.expanduser('~/.local/share/applications')
+    desktop_file = os.path.join(desktop_dir, 'labellix-studio.desktop')
+    script_path = os.path.abspath(__file__)
+    desktop_text = (
+        '[Desktop Entry]\n'
+        'Type=Application\n'
+        'Name=Labellix Studio\n'
+        'Comment=Image annotation studio\n'
+        'Exec=python3 "{script}" %F\n'
+        'Icon={icon}\n'
+        'Terminal=false\n'
+        'Categories=Graphics;Development;\n'
+        'StartupNotify=true\n'
+        'StartupWMClass=labellix-studio\n'
+    ).format(script=script_path, icon=icon_path)
+
+    try:
+        if not os.path.isdir(desktop_dir):
+            os.makedirs(desktop_dir)
+        with codecs.open(desktop_file, 'w', 'utf-8') as f:
+            f.write(desktop_text)
+    except Exception:
+        # Icon fallback still works through setWindowIcon even if desktop entry fails.
+        pass
 
 
 class WindowMixin(object):
@@ -258,12 +366,7 @@ class MainWindow(QMainWindow, WindowMixin):
     def __init__(self, default_filename=None, default_prefdef_class_file=None, default_save_dir=None):
         super(MainWindow, self).__init__()
         self.setWindowTitle(__appname__)
-        app_icon_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), 'resources', 'icons', 'modern', 'computer.png'))
-        if os.path.exists(app_icon_path):
-            self.setWindowIcon(QIcon(app_icon_path))
-        else:
-            self.setWindowIcon(new_icon('computer'))
+        self.setWindowIcon(build_app_icon())
 
         # Centralized application state (single source of runtime truth).
         self.app_state = ApplicationState(default_mode=self.DETECTION_MODE)
@@ -307,6 +410,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.m_img_list = []
         self.dir_name = None
         self.label_hist = []
+        self.predefined_classes_file = default_prefdef_class_file
+        self.lock_predefined_classes = bool(settings.get(SETTING_LOCK_PREDEFINED_CLASSES, False))
         self.last_open_dir = None
         self.cur_img_idx = 0
         self.img_count = len(self.m_img_list)
@@ -325,7 +430,11 @@ class MainWindow(QMainWindow, WindowMixin):
         if self.label_hist:
             self.default_label = self.label_hist[0]
         else:
-            print("Not find:/data/predefined_classes.txt (optional)")
+            predefined_path = ustr(self.predefined_classes_file or '')
+            if predefined_path and os.path.exists(predefined_path):
+                print('predefined_classes.txt found but no classes loaded: %s' % predefined_path)
+            else:
+                print('predefined_classes.txt path is missing or invalid: %s' % predefined_path)
 
         # Main widgets and related state.
         self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
@@ -357,6 +466,22 @@ class MainWindow(QMainWindow, WindowMixin):
         self.diffc_button = QCheckBox(get_str('useDifficult'))
         self.diffc_button.setChecked(False)
         self.diffc_button.stateChanged.connect(self.button_state)
+        self.lock_predefined_classes_checkbox = QCheckBox(get_str('lockPredefinedClasses', 'Lock predefined classes'))
+        self.lock_predefined_classes_checkbox.setChecked(self.lock_predefined_classes)
+        self.lock_predefined_classes_checkbox.stateChanged.connect(self.toggle_predefined_classes_lock)
+        self.reload_predefined_classes_button = QToolButton()
+        self.reload_predefined_classes_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.reload_predefined_classes_button.setIcon(new_icon('open'))
+        self.reload_predefined_classes_button.setText(get_str('reloadPredefinedClasses', 'Reload Classes'))
+        self.reload_predefined_classes_button.clicked.connect(self.reload_predefined_classes_from_file)
+        lock_row_layout = QHBoxLayout()
+        lock_row_layout.setContentsMargins(0, 0, 0, 0)
+        lock_row_layout.setSpacing(8)
+        lock_row_layout.addWidget(self.lock_predefined_classes_checkbox)
+        lock_row_layout.addWidget(self.reload_predefined_classes_button)
+        lock_row_layout.addStretch(1)
+        self.lock_predefined_classes_container = QWidget()
+        self.lock_predefined_classes_container.setLayout(lock_row_layout)
         self.edit_button = QToolButton()
         self.edit_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.classification_assign_button = QToolButton()
@@ -380,6 +505,7 @@ class MainWindow(QMainWindow, WindowMixin):
         # Add some of widgets to list_layout
         list_layout.addWidget(self.edit_button)
         list_layout.addWidget(self.diffc_button)
+        list_layout.addWidget(self.lock_predefined_classes_container)
         list_layout.addWidget(self.use_default_label_container)
         list_layout.addWidget(self.classification_current_label)
         list_layout.addWidget(self.classification_progress_label)
@@ -1596,6 +1722,58 @@ class MainWindow(QMainWindow, WindowMixin):
             self.label_hist.sort(key=lambda value: value.lower())
             self._update_label_history_widgets(preferred_label=label)
 
+    def toggle_predefined_classes_lock(self, _value=False):
+        self.lock_predefined_classes = bool(self.lock_predefined_classes_checkbox.isChecked())
+        if self.lock_predefined_classes:
+            self.reload_predefined_classes_from_file()
+        self.status(
+            self.get_str('lockPredefinedClasses', 'Lock predefined classes') +
+            (' enabled' if self.lock_predefined_classes else ' disabled')
+        )
+
+    def reload_predefined_classes_from_file(self, _value=False):
+        latest_predefined = self._read_predefined_classes_file()
+        self.base_label_hist = list(latest_predefined)
+
+        if self.is_predefined_classes_lock_enabled():
+            self.label_hist = sorted(self.base_label_hist, key=lambda value: value.lower())
+        else:
+            merged_labels = {trimmed(label) for label in self.label_hist if trimmed(label)}
+            merged_labels.update(self.base_label_hist)
+            self.label_hist = sorted(merged_labels, key=lambda value: value.lower())
+
+        self._update_label_history_widgets(preferred_label=getattr(self, 'default_label', None))
+        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
+        self.status(
+            self.get_str('reloadPredefinedClassesDone', 'Reloaded classes from predefined_classes.txt (%d)')
+            % len(self.base_label_hist)
+        )
+
+    def is_predefined_classes_lock_enabled(self):
+        if hasattr(self, 'lock_predefined_classes_checkbox'):
+            return bool(self.lock_predefined_classes_checkbox.isChecked())
+        return bool(getattr(self, 'lock_predefined_classes', False))
+
+    def _allowed_predefined_labels(self):
+        return {trimmed(label) for label in self.base_label_hist if trimmed(label)}
+
+    def _validate_label_against_lock(self, label):
+        normalized = trimmed(label)
+        if not normalized:
+            return False
+        if not self.is_predefined_classes_lock_enabled():
+            return True
+        if normalized in self._allowed_predefined_labels():
+            return True
+        self.error_message(
+            self.get_str('labelLockTitle', 'Predefined classes lock'),
+            self.get_str(
+                'labelLockBlocked',
+                'Class "%s" is not in predefined_classes.txt. Disable lock or add it to the file.'
+            ) % normalized,
+        )
+        return False
+
     def load_classification_manifest(self, source_dir=None):
         source_dir = source_dir or self.classification_source_dir()
         self.label_hist = list(self.base_label_hist)
@@ -1695,6 +1873,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.use_default_label_container.setVisible((not is_classification_mode) and (not is_license_plate_mode) and (not is_training_mode))
         self.diffc_button.setVisible((not is_classification_mode) and (not is_license_plate_mode) and (not is_training_mode))
+        self.lock_predefined_classes_container.setVisible((not is_classification_mode) and (not is_license_plate_mode) and (not is_training_mode))
         self.edit_button.setVisible((not is_classification_mode) and (not is_training_mode) and not self.actions.advancedMode.isChecked())
         self.combo_box.setVisible((not is_classification_mode) and (not is_training_mode))
         self.classification_current_label.setVisible(is_classification_mode)
@@ -2070,6 +2249,48 @@ class MainWindow(QMainWindow, WindowMixin):
             QMessageBox.Yes)
         return choice == QMessageBox.Yes
 
+    def _run_yolo_export_config_dialog(self, default_dir):
+        strings = {
+            'browse': self.get_str('yoloConfigBrowse', 'Browse'),
+            'exportDir': self.get_str('yoloConfigExportDir', 'Export folder'),
+            'datasetName': self.get_str('yoloConfigDatasetName', 'Dataset folder name'),
+            'trainPercent': self.get_str('yoloConfigTrainPercent', 'Train (%)'),
+            'testPercent': self.get_str('yoloConfigTestPercent', 'Test (%)'),
+            'validPercent': self.get_str('yoloConfigValidPercent', 'Valid (%)'),
+            'splitSum': self.get_str('yoloConfigSplitSum', 'Split sum'),
+            'stratified': self.get_str('yoloConfigStratified', 'Use stratified split by dominant class'),
+            'shuffle': self.get_str('yoloConfigShuffle', 'Shuffle before split'),
+            'seed': self.get_str('yoloConfigSeed', 'Random seed'),
+            'preview': self.get_str('yoloConfigPreview', 'Show split preview before export'),
+            'zip': self.get_str('yoloConfigZip', 'Create zip after export'),
+            'chooseExportDirTitle': self.get_str('yoloConfigChooseExportDir', 'Choose export folder'),
+            'splitSumOk': self.get_str('yoloConfigSplitSumOk', '100 (OK)'),
+            'splitSumInvalid': self.get_str('yoloConfigSplitSumInvalid', 'Must be 100 (current: %d)'),
+            'missingExportDir': self.get_str('yoloConfigMissingExportDir', 'Please choose an export folder.'),
+            'invalidExportDir': self.get_str('yoloConfigInvalidExportDir', 'Export folder does not exist.'),
+            'missingDatasetName': self.get_str('yoloConfigMissingDatasetName', 'Please enter dataset folder name.'),
+            'invalidSplit': self.get_str('yoloSplitInvalid', 'Split ratios must sum to 100.'),
+        }
+        defaults = {
+            'export_dir': default_dir,
+            'dataset_name': 'yolo_dataset',
+            'train_percent': 80,
+            'test_percent': 10,
+            'valid_percent': 10,
+            'stratified': False,
+            'shuffle': True,
+            'seed': 42,
+            'show_preview': True,
+            'create_zip': False,
+        }
+        dialog = YOLOExportConfigDialog(
+            self,
+            title=self.get_str('exportYOLODataset', 'Export YOLO Dataset'),
+            defaults=defaults,
+            strings=strings,
+        )
+        return dialog.get_config()
+
     def export_yolo_dataset(self, _value=False):
         if self.is_classification_mode() or not self.m_img_list:
             return
@@ -2080,33 +2301,20 @@ class MainWindow(QMainWindow, WindowMixin):
             return
 
         default_dir = self.yolo_export_dir or source_dir or '.'
-        export_dir = ustr(QFileDialog.getExistingDirectory(
-            self,
-            '%s - %s' % (__appname__, self.get_str('exportYOLODataset', 'Export YOLO Dataset')),
-            default_dir,
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks))
-        if not export_dir:
+        config = self._run_yolo_export_config_dialog(default_dir)
+        if not config:
             return
 
-        dataset_name, ok = QInputDialog.getText(
-            self,
-            self.get_str('exportYOLODataset', 'Export YOLO Dataset'),
-            self.get_str('datasetFolderName'),
-            text='yolo_dataset')
-        dataset_name = trimmed(dataset_name)
-        if not ok or not dataset_name:
-            return
-
-        split_percentages = self._ask_split_percentages()
-        if split_percentages is None:
-            return
-        train_percent, test_percent, valid_percent = split_percentages
-
-        stratified = self._ask_stratified_split()
-
-        seed = self._ask_yolo_random_seed()
-        if seed is None:
-            return
+        export_dir = config.get('export_dir')
+        dataset_name = config.get('dataset_name')
+        train_percent = config.get('train_percent', 80)
+        test_percent = config.get('test_percent', 10)
+        valid_percent = config.get('valid_percent', 10)
+        stratified = bool(config.get('stratified', False))
+        shuffle = bool(config.get('shuffle', True))
+        seed = int(config.get('seed', 42))
+        show_preview_requested = bool(config.get('show_preview', True))
+        create_zip = bool(config.get('create_zip', False))
 
         dataset_root = os.path.join(export_dir, dataset_name)
         session = YOLODatasetSession(source_dir=source_dir, seed=seed)
@@ -2118,7 +2326,8 @@ class MainWindow(QMainWindow, WindowMixin):
                 test_percent=test_percent,
                 valid_percent=valid_percent,
                 skip_unlabeled=True,
-                stratified=stratified)
+                stratified=stratified,
+                shuffle=shuffle)
         except YOLODatasetExportError as e:
             self.error_message(self.get_str('yoloExportError', 'YOLO dataset export error'), u'<b>%s</b>' % e)
             return
@@ -2152,7 +2361,7 @@ class MainWindow(QMainWindow, WindowMixin):
             if warn_decision != QMessageBox.Yes:
                 return
 
-        if self._ask_show_split_preview():
+        if show_preview_requested:
             if not self._show_yolo_split_preview(preview, train_percent, test_percent, valid_percent, seed):
                 return
 
@@ -2167,6 +2376,7 @@ class MainWindow(QMainWindow, WindowMixin):
                 skip_unlabeled=True,
                 write_yaml=True,
                 stratified=stratified,
+                shuffle=shuffle,
                 write_stats=True)
         except YOLODatasetExportError as e:
             self.error_message(self.get_str('yoloExportError', 'YOLO dataset export error'), u'<b>%s</b>' % e)
@@ -2188,6 +2398,7 @@ class MainWindow(QMainWindow, WindowMixin):
             'YAML: %s\n'
             '%s: %s\n'
             'Stratified split: %s\n'
+            'Shuffle: %s\n'
             'Output: %s'
         ) % (
             self.get_str('yoloExportDone', 'YOLO dataset export completed.'),
@@ -2200,24 +2411,71 @@ class MainWindow(QMainWindow, WindowMixin):
             self.get_str('yoloStatsReport', 'Stats report'),
             result.get('stats_path', ''),
             'Yes' if result.get('stratified') else 'No',
+            'Yes' if result.get('shuffle', True) else 'No',
             result.get('output_dir', ''),
         )
         QMessageBox.information(self, self.get_str('exportYOLODataset', 'Export YOLO Dataset'), summary)
 
-        zip_question = QMessageBox.question(
-            self,
-            self.get_str('exportYOLODataset', 'Export YOLO Dataset'),
-            self.get_str('exportZipQuestion', 'Create a .zip file for the exported dataset?'),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes)
-        if zip_question == QMessageBox.Yes:
+        if create_zip:
             try:
                 shutil.make_archive(dataset_root, 'zip', os.path.dirname(dataset_root), os.path.basename(dataset_root))
             except Exception as e:
                 self.error_message(self.get_str('yoloExportError', 'YOLO dataset export error'), u'<b>%s</b>' % e)
                 return
 
+            delete_question = self.get_str(
+                'yoloDeleteSourceAfterZipQuestion',
+                'Delete source images and txt labels from the current directory now?')
+            delete_warning = self.get_str(
+                'yoloDeleteSourceAfterZipWarning',
+                'This will permanently delete source images and txt labels under:\n%s') % source_dir
+            delete_choice = QMessageBox.question(
+                self,
+                self.get_str('exportYOLODataset', 'Export YOLO Dataset'),
+                '%s\n\n%s' % (delete_question, delete_warning),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No)
+            if delete_choice == QMessageBox.Yes:
+                typed_text, typed_ok = QInputDialog.getText(
+                    self,
+                    self.get_str('exportYOLODataset', 'Export YOLO Dataset'),
+                    self.get_str('yoloDeleteSourceTypeConfirm', 'Type YES to confirm deletion, or NO to cancel:')
+                )
+                typed_text = trimmed(typed_text).upper()
+                if not typed_ok or typed_text == 'NO':
+                    self.status(self.get_str('yoloDeleteSourceTypeCancelled', 'Delete cancelled.'))
+                elif typed_text == 'YES':
+                    try:
+                        self._delete_source_images_and_txt(source_dir)
+                    except Exception as e:
+                        self.error_message(self.get_str('yoloExportError', 'YOLO dataset export error'), u'<b>%s</b>' % e)
+                        return
+                    self.status(self.get_str('yoloDeleteSourceAfterZipDone', 'Source images and txt labels deleted.'))
+                else:
+                    self.status(self.get_str('yoloDeleteSourceTypeInvalid', 'Invalid input: type YES to delete or NO to cancel.'))
+
         self.status(self.get_str('yoloExportDone', 'YOLO dataset export completed.'))
+
+    def _delete_source_images_and_txt(self, source_dir):
+        image_paths = set(self.scan_all_images(source_dir))
+        txt_paths = set()
+        for image_path in image_paths:
+            txt_paths.add(os.path.splitext(image_path)[0] + TXT_EXT)
+
+        # Also remove classes.txt in the source root when user confirms cleanup.
+        txt_paths.add(os.path.join(source_dir, 'classes.txt'))
+
+        for file_path in image_paths:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        for file_path in txt_paths:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        if source_dir == self.dir_name:
+            self.set_clean()
+            self.import_dir_images(source_dir)
 
     def save_training_logs(self):
         if not self.training_log_text.toPlainText().strip():
@@ -2686,6 +2944,9 @@ class MainWindow(QMainWindow, WindowMixin):
             return
         text = self.label_dialog.pop_up(item.text())
         if text is not None:
+            text = trimmed(text)
+            if not self._validate_label_against_lock(text):
+                return
             item.setText(text)
             item.setBackground(generate_color_by_text(text))
             self.set_dirty()
@@ -2979,6 +3240,10 @@ class MainWindow(QMainWindow, WindowMixin):
         # Add Chris
         self.diffc_button.setChecked(False)
         if text is not None:
+            text = trimmed(text)
+            if not self._validate_label_against_lock(text):
+                self.canvas.reset_all_lines()
+                return
             self.prev_label_text = text
             generate_color = generate_color_by_text(text)
             shape = self.canvas.set_last_label(text, generate_color, generate_color)
@@ -3322,6 +3587,7 @@ class MainWindow(QMainWindow, WindowMixin):
         settings[SETTING_COMPACT_MODE] = self.compact_mode_option.isChecked()
         settings[SETTING_MODERN_ICONS] = self.modern_icons_option.isChecked()
         settings[SETTING_REDUCED_MOTION] = self.reduced_motion_option.isChecked()
+        settings[SETTING_LOCK_PREDEFINED_CLASSES] = self.lock_predefined_classes_checkbox.isChecked()
         settings[SETTING_FOCUS_MODE] = self.focus_mode_option.isChecked()
         settings[SETTING_DRAW_SQUARE] = self.draw_squares_option.isChecked()
         settings[SETTING_LABEL_FILE_FORMAT] = self.label_file_format
@@ -3409,11 +3675,22 @@ class MainWindow(QMainWindow, WindowMixin):
         else:
             default_open_dir_path = os.path.dirname(self.file_path) if self.file_path else '.'
         if silent != True:
-            target_dir_path = ustr(QFileDialog.getExistingDirectory(self,
-                                                                    '%s - Open Directory' % __appname__, default_open_dir_path,
-                                                                    QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks))
+            image_formats = ['*.%s' % fmt.data().decode('ascii').lower() for fmt in QImageReader.supportedImageFormats()]
+            filters = 'Image files (%s);;All files (*)' % ' '.join(image_formats)
+            selected_file, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                '%s - Open Directory' % __appname__,
+                default_open_dir_path,
+                filters,
+            )
+            selected_file = ustr(selected_file)
+            if not selected_file:
+                return
+            target_dir_path = selected_file if os.path.isdir(selected_file) else os.path.dirname(selected_file)
         else:
             target_dir_path = ustr(default_open_dir_path)
+        if not target_dir_path:
+            return
         self.last_open_dir = target_dir_path
         self.import_dir_images(target_dir_path)
         self.default_save_dir = target_dir_path
@@ -3433,6 +3710,14 @@ class MainWindow(QMainWindow, WindowMixin):
         for imgPath in self.m_img_list:
             item = QListWidgetItem(imgPath)
             self.file_list_widget.addItem(item)
+        if self.img_count == 0:
+            # Clear any previously loaded image so the canvas does not show stale content.
+            self.reset_state()
+            self.set_clean()
+            self.toggle_actions(False)
+            self.canvas.setEnabled(False)
+            self.actions.saveAs.setEnabled(False)
+            return
         if self.is_classification_mode():
             self.load_classification_manifest(dir_path)
         self.refresh_file_list_classification_state()
@@ -3755,14 +4040,37 @@ class MainWindow(QMainWindow, WindowMixin):
         self._capture_history_state(clear_redo=True)
 
     def load_predefined_classes(self, predef_classes_file):
-        if os.path.exists(predef_classes_file) is True:
-            with codecs.open(predef_classes_file, 'r', 'utf8') as f:
-                for line in f:
-                    line = line.strip()
-                    if self.label_hist is None:
-                        self.label_hist = [line]
-                    else:
-                        self.label_hist.append(line)
+        if not predef_classes_file:
+            return
+
+        predef_classes_file = ustr(predef_classes_file)
+        self.predefined_classes_file = predef_classes_file
+        self.label_hist.extend(self._read_predefined_classes_file())
+
+    def _read_predefined_classes_file(self):
+        predef_classes_file = ustr(getattr(self, 'predefined_classes_file', '') or '')
+        if not predef_classes_file:
+            return []
+
+        predef_dir = os.path.dirname(predef_classes_file)
+        if predef_dir and (not os.path.isdir(predef_dir)):
+            os.makedirs(predef_dir)
+
+        if not os.path.exists(predef_classes_file):
+            with codecs.open(predef_classes_file, 'w', 'utf8'):
+                pass
+            print(self.get_str('predefinedClassesCreated', 'Created missing predefined classes file: %s') % predef_classes_file)
+
+        labels = []
+        with codecs.open(predef_classes_file, 'r', 'utf8') as f:
+            seen = set()
+            for line in f:
+                line = trimmed(line)
+                if not line or line in seen:
+                    continue
+                seen.add(line)
+                labels.append(line)
+        return labels
 
     def load_pascal_xml_by_filename(self, xml_path):
         if self.file_path is None:
@@ -3861,12 +4169,13 @@ def get_main_app(argv=None):
         argv = []
     app = QApplication(argv)
     app.setApplicationName(__appname__)
-    app_icon_path = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), 'resources', 'icons', 'modern', 'computer.png'))
-    if os.path.exists(app_icon_path):
-        app.setWindowIcon(QIcon(app_icon_path))
-    else:
-        app.setWindowIcon(new_icon("computer"))
+    app_icon = build_app_icon()
+    app_icon_path = get_primary_app_icon_path()
+    ensure_linux_desktop_entry(app_icon_path)
+    QApplication.setWindowIcon(app_icon)
+    app.setWindowIcon(app_icon)
+    if hasattr(app, 'setDesktopFileName'):
+        app.setDesktopFileName('labellix-studio')
     # Tzutalin 201705+: Accept extra agruments to change predefined class file
     argparser = argparse.ArgumentParser()
     argparser.add_argument("image_dir", nargs="?")

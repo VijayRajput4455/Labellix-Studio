@@ -342,6 +342,13 @@ class YOLODatasetSession(object):
         split_data['valid'] = all_items[counts['train'] + counts['test']:]
         return split_data
 
+    def _ordered_pairs_for_split(self, labeled_pairs, shuffle=True):
+        ordered = list(labeled_pairs)
+        if shuffle:
+            randomizer = random.Random(self.seed)
+            randomizer.shuffle(ordered)
+        return ordered
+
     @staticmethod
     def _primary_class_for_label(label_path, classes):
         if not classes:
@@ -368,13 +375,14 @@ class YOLODatasetSession(object):
         return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
 
     def preview_split(self, image_paths, train_percent=80, test_percent=10, valid_percent=10,
-                      skip_unlabeled=True, stratified=False):
+                      skip_unlabeled=True, stratified=False, shuffle=True):
         self._validate_percentages(train_percent, test_percent, valid_percent)
         classes = self._load_classes()
         labeled_pairs, skipped_images = self._labeled_pairs(image_paths, skip_unlabeled=skip_unlabeled)
+        ordered_pairs = self._ordered_pairs_for_split(labeled_pairs, shuffle=shuffle)
         counts = self._allocate_counts(len(labeled_pairs), train_percent, test_percent, valid_percent)
         quality = self._scan_quality(labeled_pairs, classes)
-        split_assignment = self._assign_split_ranges(labeled_pairs, counts, stratified=stratified, classes=classes)
+        split_assignment = self._assign_split_ranges(ordered_pairs, counts, stratified=stratified, classes=classes)
 
         return {
             'classes': classes,
@@ -385,6 +393,7 @@ class YOLODatasetSession(object):
             'quality': quality,
             'split_assignment': split_assignment,
             'stratified': stratified,
+            'shuffle': bool(shuffle),
         }
 
     @staticmethod
@@ -430,6 +439,7 @@ class YOLODatasetSession(object):
 
     def export_dataset(self, output_dir, image_paths, train_percent=80, test_percent=10, valid_percent=10,
                        copy_images=True, skip_unlabeled=True, write_yaml=True, stratified=False,
+                       shuffle=True,
                        write_stats=True):
         ensure_required_path(
             self.source_dir,
@@ -484,6 +494,7 @@ class YOLODatasetSession(object):
             valid_percent=valid_percent,
             skip_unlabeled=skip_unlabeled,
             stratified=stratified,
+            shuffle=shuffle,
         )
         classes = preview['classes']
         labeled_pairs, skipped_images = self._labeled_pairs(image_paths, skip_unlabeled=skip_unlabeled)
@@ -497,11 +508,7 @@ class YOLODatasetSession(object):
                 % len(quality.get('invalid_class_images', []))
             )
 
-        randomizer = random.Random(self.seed)
-        randomizer.shuffle(labeled_pairs)
-
-        counts = preview['counts']
-        split_assignment = self._assign_split_ranges(labeled_pairs, counts, stratified=stratified, classes=classes)
+        split_assignment = preview.get('split_assignment', {})
 
         split_dirs = self._create_split_dirs(output_dir)
         operation = shutil.copy2 if copy_images else shutil.move
@@ -543,6 +550,7 @@ class YOLODatasetSession(object):
                 'malformed_label_images': quality.get('malformed_label_images', []),
                 'duplicate_groups': quality.get('duplicate_groups', []),
                 'stratified': stratified,
+                'shuffle': bool(shuffle),
                 'seed': self.seed,
             })
 
@@ -557,4 +565,5 @@ class YOLODatasetSession(object):
             'exported': exported,
             'quality': quality,
             'stratified': stratified,
+            'shuffle': bool(shuffle),
         }

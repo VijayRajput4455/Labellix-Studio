@@ -88,7 +88,29 @@ Quick environment setup on Linux:
     python3 -m venv .venv
     source .venv/bin/activate
     pip install --upgrade pip
-    pip install -r requirements/requirements-linux-python3.txt
+    pip install -r requirements/requirements.txt
+
+Conda environment setup (recommended for sharing with team):
+
+.. code:: bash
+
+    conda env create -f environment.yml
+    conda activate labellix-studio
+
+One-command setup script:
+
+.. code:: bash
+
+    chmod +x scripts/setup_conda.sh
+    ./scripts/setup_conda.sh
+    conda activate labellix-studio
+
+If the environment already exists:
+
+.. code:: bash
+
+    conda env update -f environment.yml --prune
+    conda activate labellix-studio
 
 Run the app:
 
@@ -111,8 +133,26 @@ From a fresh clone, run these commands in order:
 
     python3 -m venv .venv
     source .venv/bin/activate
-    pip install -r requirements/requirements-linux-python3.txt
+    pip install -r requirements/requirements.txt
     python3 labellix_studio.py
+
+Environment Info (for easy support/debugging)
+----------------------------------------------
+
+Collect and share active environment details:
+
+.. code:: bash
+
+    python --version
+    pip --version
+    pip freeze
+
+Export reproducible conda environment files:
+
+.. code:: bash
+
+    conda env export --name labellix-studio > environment.lock.yml
+    conda env export --from-history --name labellix-studio > environment.history.yml
 
 If your Linux desktop has Qt display plugin issues, try:
 
@@ -275,7 +315,7 @@ Common Errors and One-Line Fixes
 +--------------------------------------+--------------------------------------------------------------+
 | Symptom                              | One-line fix                                                 |
 +--------------------------------------+--------------------------------------------------------------+
-| ``ModuleNotFoundError: PyQt5``       | ``pip install -r requirements/requirements-linux-python3.txt`` |
+| ``ModuleNotFoundError: PyQt5``       | ``pip install -r requirements/requirements.txt`` |
 +--------------------------------------+--------------------------------------------------------------+
 | ``ModuleNotFoundError: lxml``        | ``pip install lxml``                                         |
 +--------------------------------------+--------------------------------------------------------------+

@@ -552,7 +552,7 @@ class Canvas(QWidget):
             self.selected_shape_copy.paint(p)
 
         # Paint rect
-        if self.current is not None and len(self.line) == 2:
+        if self.current is not None and len(self.line) == 2 and not self.segmentation_mode:
             left_top = self.line[0]
             right_bottom = self.line[1]
             rect_width = right_bottom.x() - left_top.x()
@@ -594,6 +594,8 @@ class Canvas(QWidget):
         return point / self.scale - self.offset_to_center()
 
     def offset_to_center(self):
+        if self.pixmap is None or self.pixmap.isNull():
+            return QPointF(0, 0)
         s = self.scale
         area = super(Canvas, self).size()
         w, h = self.pixmap.width() * s, self.pixmap.height() * s
@@ -603,6 +605,8 @@ class Canvas(QWidget):
         return QPointF(x, y)
 
     def out_of_pixmap(self, p):
+        if self.pixmap is None or self.pixmap.isNull():
+            return True
         w, h = self.pixmap.width(), self.pixmap.height()
         return not (0 <= p.x() <= w and 0 <= p.y() <= h)
 
@@ -764,7 +768,7 @@ class Canvas(QWidget):
         self.selected_shape_copy = None
 
         self.restore_cursor()
-        self.pixmap = None
+        self.pixmap = QPixmap()
         self.update()
 
     def set_drawing_shape_to_square(self, status):

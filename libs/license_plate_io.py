@@ -3,6 +3,11 @@ import shutil
 
 from libs.atomic_io import atomic_write_json, atomic_write_text
 
+try:
+    from PyQt5.QtGui import QImage
+except ImportError:
+    from PyQt4.QtGui import QImage
+
 
 class LicensePlateIOError(Exception):
     pass
@@ -22,7 +27,26 @@ class LicensePlateDatasetSession(object):
             suffix += 1
         return candidate
 
-    def export_dataset(self, output_dir, image_paths, move_images=False, skip_unlabeled=True):
+    @staticmethod
+    def _clamp_bbox(record, image_width, image_height):
+        x_min = int(record.get('xmin', 0))
+        y_min = int(record.get('ymin', 0))
+        x_max = int(record.get('xmax', 0))
+        y_max = int(record.get('ymax', 0))
+
+        if image_width <= 0 or image_height <= 0:
+            return None
+
+        left = max(0, min(x_min, x_max))
+        top = max(0, min(y_min, y_max))
+        right = min(image_width - 1, max(x_min, x_max))
+        bottom = min(image_height - 1, max(y_min, y_max))
+
+        if right < left or bottom < top:
+            return None
+        return left, top, right, bottom
+
+    def export_dataset(self, output_dir, image_paths, move_images=False, skip_unlabeled=True, crop_plates_only=False):
         if not self.source_dir or not os.path.isdir(self.source_dir):
             raise LicensePlateIOError('Invalid source directory for license plate export.')
         if not output_dir:
@@ -72,23 +96,98 @@ class LicensePlateDatasetSession(object):
         os.makedirs(images_dir, exist_ok=True)
         os.makedirs(labels_dir, exist_ok=True)
 
-        operation = shutil.move if move_images else shutil.copy2
         exported_count = 0
-        for image_path, txt_path in labeled_pairs:
-            image_name = os.path.basename(image_path)
-            target_image_path = self._unique_target_path(images_dir, image_name)
-            try:
-                operation(image_path, target_image_path)
-            except OSError as exc:
-                raise LicensePlateIOError('Failed to export image %s -> %s: %s' % (image_path, target_image_path, exc))
+        skipped_invalid_annotations = []
 
-            label_name = os.path.splitext(os.path.basename(target_image_path))[0] + '.txt'
-            target_label_path = os.path.join(labels_dir, label_name)
-            try:
-                operation(txt_path, target_label_path)
-            except OSError as exc:
-                raise LicensePlateIOError('Failed to export label %s -> %s: %s' % (txt_path, target_label_path, exc))
-            exported_count += 1
+        if not crop_plates_only:
+            operation = shutil.move if move_images else shutil.copy2
+            for image_path, txt_path in labeled_pairs:
+                image_name = os.path.basename(image_path)
+                target_image_path = self._unique_target_path(images_dir, image_name)
+                try:
+                    operation(image_path, target_image_path)
+                except OSError as exc:
+                    raise LicensePlateIOError('Failed to export image %s -> %s: %s' % (image_path, target_image_path, exc))
+
+                label_name = os.path.splitext(os.path.basename(target_image_path))[0] + '.txt'
+                target_label_path = os.path.join(labels_dir, label_name)
+                try:
+                    operation(txt_path, target_label_path)
+                except OSError as exc:
+                    raise LicensePlateIOError('Failed to export label %s -> %s: %s' % (txt_path, target_label_path, exc))
+                exported_count += 1
+        else:
+            for image_path, txt_path in labeled_pairs:
+                records = read_annotations(txt_path)
+                if not records:
+                    skipped_invalid_annotations.append(image_path)
+                    continue
+
+                image = QImage(image_path)
+                if image.isNull():
+                    raise LicensePlateIOError('Failed to read source image for cropping: %s' % image_path)
+
+                valid_records = []
+                for record in records:
+                    bbox = self._clamp_bbox(record, image.width(), image.height())
+                    if bbox is None:
+                        continue
+                    valid_records.append((record, bbox))
+
+                if not valid_records:
+                    skipped_invalid_annotations.append(image_path)
+                    continue
+
+                source_name = os.path.basename(image_path)
+                source_base, source_ext = os.path.splitext(source_name)
+                source_ext = source_ext or '.png'
+
+                for idx, (record, bbox) in enumerate(valid_records, start=1):
+                    left, top, right, bottom = bbox
+                    crop_width = (right - left) + 1
+                    crop_height = (bottom - top) + 1
+                    cropped = image.copy(left, top, crop_width, crop_height)
+                    if cropped.isNull() or crop_width <= 0 or crop_height <= 0:
+                        continue
+
+                    if len(valid_records) == 1:
+                        image_filename = source_base + source_ext
+                    else:
+                        image_filename = '%s_%d%s' % (source_base, idx, source_ext)
+
+                    target_image_path = self._unique_target_path(images_dir, image_filename)
+                    if not cropped.save(target_image_path):
+                        fallback_name = os.path.splitext(image_filename)[0] + '.png'
+                        target_image_path = self._unique_target_path(images_dir, fallback_name)
+                        if not cropped.save(target_image_path):
+                            raise LicensePlateIOError('Failed to export cropped image: %s' % target_image_path)
+
+                    label_name = os.path.splitext(os.path.basename(target_image_path))[0] + '.txt'
+                    target_label_path = os.path.join(labels_dir, label_name)
+                    crop_record = {
+                        'plate': record.get('plate', ''),
+                        'xmin': 0,
+                        'ymin': 0,
+                        'xmax': crop_width - 1,
+                        'ymax': crop_height - 1,
+                    }
+                    write_annotations(target_label_path, [crop_record])
+                    exported_count += 1
+
+                if move_images:
+                    try:
+                        os.remove(image_path)
+                    except OSError as exc:
+                        raise LicensePlateIOError('Failed to remove source image after export %s: %s' % (image_path, exc))
+                    try:
+                        os.remove(txt_path)
+                    except OSError as exc:
+                        raise LicensePlateIOError('Failed to remove source label after export %s: %s' % (txt_path, exc))
+
+            if not exported_count:
+                raise LicensePlateIOError('No valid license plate boxes found to export.')
+
+            skipped_images.extend(skipped_invalid_annotations)
 
         report_path = os.path.join(output_dir, 'export_report.json')
         report_payload = {
@@ -100,6 +199,7 @@ class LicensePlateDatasetSession(object):
             'skipped_unlabeled': len(skipped_images),
             'skipped_images': skipped_images,
             'move_images': bool(move_images),
+            'crop_plates_only': bool(crop_plates_only),
         }
         try:
             atomic_write_json(report_path, report_payload, encoding='utf-8', indent=2, sort_keys=True)
@@ -115,6 +215,7 @@ class LicensePlateDatasetSession(object):
             'skipped_unlabeled': len(skipped_images),
             'skipped_images': skipped_images,
             'move_images': bool(move_images),
+            'crop_plates_only': bool(crop_plates_only),
         }
 
 

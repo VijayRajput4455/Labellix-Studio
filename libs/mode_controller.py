@@ -20,9 +20,7 @@ class ModeController(object):
         self._set_action_checked(self.window.actions.detectionMode, checked)
 
     def _reset_label_dialog_after_classification(self):
-        self.window.base_label_hist = list(self.window.label_hist)
-        self.window._update_label_history_widgets()
-        self.window.label_dialog = LabelDialog(parent=self.window, list_item=self.window.label_hist)
+        self.window.restore_detection_label_history()
         if not self.window.file_path:
             self.window.label_list.clear()
 
@@ -121,6 +119,9 @@ class ModeController(object):
         if self.window.dirty and not self.window.may_continue():
             self._set_action_checked(self.window.actions.classificationMode, self.window.is_classification_mode())
             return
+
+        if value:
+            self.window.cache_detection_label_history()
 
         self.window.app_mode = self.window.CLASSIFICATION_MODE if value else self.window.DETECTION_MODE
         self._set_action_checked(self.window.actions.classificationMode, bool(value))

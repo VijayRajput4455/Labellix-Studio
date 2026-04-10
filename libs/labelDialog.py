@@ -37,9 +37,8 @@ class LabelDialog(QDialog):
         bb.rejected.connect(self.reject)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(14, 14, 14, 12)
-        layout.setSpacing(10)
-        layout.addWidget(bb, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.setContentsMargins(14, 12, 14, 10)
+        layout.setSpacing(8)
         layout.addWidget(self.edit)
 
         if list_item is not None and len(list_item) > 0:
@@ -51,6 +50,7 @@ class LabelDialog(QDialog):
             self.list_widget.itemDoubleClicked.connect(self.list_item_double_click)
             layout.addWidget(self.list_widget)
 
+        layout.addWidget(bb, alignment=Qt.AlignmentFlag.AlignRight)
         self.setLayout(layout)
 
     def validate(self):

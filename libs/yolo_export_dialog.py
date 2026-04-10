@@ -40,7 +40,8 @@ class YOLOExportConfigDialog(QDialog):
 
         self.setWindowTitle(title)
         self.setModal(True)
-        self.resize(560, 360)
+        self.setMinimumWidth(520)
+        self.resize(540, 380)
 
         root_layout = QVBoxLayout(self)
         form = QFormLayout()

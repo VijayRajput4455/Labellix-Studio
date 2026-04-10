@@ -97,10 +97,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
     
     QMenuBar::item {{ 
         color: {fg}; 
-        padding: 8px 16px; 
-        border-radius: 8px; 
+        padding: 5px 12px; 
+        border-radius: 6px; 
         background: transparent;
-        margin: 2px 2px;
+        margin: 1px 1px;
     }}
     
     QMenuBar::item:selected {{ 
@@ -126,10 +126,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
     }}
     
     QMenu::item {{ 
-        padding: 10px 26px 10px 18px; 
-        border-radius: 6px; 
+        padding: 7px 20px 7px 16px; 
+        border-radius: 5px; 
         background: transparent;
-        margin: 2px 6px;
+        margin: 1px 5px;
     }}
     
     QMenu::item:selected {{ 
@@ -155,8 +155,8 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
                        stop:0 {bg2}, stop:1 {bg});
         border-right: 2px solid {border}; 
-        spacing: 5px; 
-        padding: 12px 6px;
+        spacing: 4px; 
+        padding: 8px 5px;
         margin: 0px;
     }}
     
@@ -173,10 +173,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         color: {fg2}; 
         background: rgba(255, 255, 255, 0.04); 
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 10px; 
-        padding: 8px 10px; 
-        min-width: 40px;
-        min-height: 32px;
+        border-radius: 8px; 
+        padding: 5px 8px; 
+        min-width: 36px;
+        min-height: 28px;
         margin: 2px;
     }}
     
@@ -246,10 +246,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         border: 1px solid {border}; 
         border-left: 3px solid {acc3};
         border-bottom: 2px solid {acc};
-        padding: 10px 14px; 
+        padding: 6px 12px; 
         text-align: left;
-        border-top-left-radius: 8px; 
-        border-top-right-radius: 8px; 
+        border-top-left-radius: 6px; 
+        border-top-right-radius: 6px; 
         color: {acc3};
         font-weight: 700;
     }}
@@ -293,10 +293,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
     }}
     
     QListWidget::item {{ 
-        padding: 8px 12px; 
-        border-radius: 6px; 
+        padding: 5px 10px; 
+        border-radius: 5px; 
         border: none;
-        margin: 2px 0px;
+        margin: 1px 0px;
     }}
     
     QListWidget::item:selected {{
@@ -325,9 +325,9 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: {bg2}; 
         color: {fg}; 
         border: 1px solid {border};
-        border-radius: 8px; 
-        padding: 6px 12px 6px 14px; 
-        min-height: 32px;
+        border-radius: 6px; 
+        padding: 4px 10px 4px 12px; 
+        min-height: 26px;
         margin: 2px;
     }}
     
@@ -407,8 +407,8 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
 
     QComboBox#labelFilterCombo,
     QComboBox#defaultLabelCombo {{
-        min-height: 32px;
-        border-radius: 8px;
+        min-height: 28px;
+        border-radius: 6px;
         padding-left: 10px;
     }}
 
@@ -417,9 +417,9 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: {bg2}; 
         color: {fg}; 
         border: 1px solid {border};
-        border-radius: 8px; 
-        padding: 6px 10px; 
-        min-height: 32px;
+        border-radius: 6px; 
+        padding: 4px 8px; 
+        min-height: 26px;
         margin: 2px;
     }}
     
@@ -505,9 +505,9 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
             stop:0 {acc}, stop:1 {acc2});
         border: 1px solid {acc3}; 
-        border-radius: 8px; 
-        padding: 8px 18px;
-        min-height: 32px; 
+        border-radius: 6px; 
+        padding: 5px 14px;
+        min-height: 28px; 
         font-weight: 600;
         margin: 2px;
     }}
@@ -516,13 +516,13 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
             stop:0 {acc2}, stop:1 {acc});
         border: 2px solid {acc}; 
-        padding: 7px 17px;
+        padding: 4px 13px;
     }}
     
     QPushButton:pressed {{ 
         background: {acc3}; 
         border: 1px solid {acc2};
-        padding: 9px 18px;
+        padding: 6px 14px;
     }}
     
     QPushButton:disabled {{ 
@@ -703,9 +703,9 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         background: {bg2}; 
         color: {fg}; 
         border: 1px solid {border};
-        border-radius: 8px; 
-        padding: 6px 12px; 
-        min-height: 32px;
+        border-radius: 6px; 
+        padding: 4px 10px; 
+        min-height: 26px;
         margin: 2px;
         selection-background-color: {acc};
         selection-color: {sel_fg};
@@ -725,6 +725,22 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         border: 1px solid {border};
         border-radius: 10px;
         background: {bg2};
+    }}
+
+    /* ===== DIALOG BUTTON BOX (compact, standard dialog style) ===== */
+    QDialogButtonBox QPushButton {{
+        min-height: 28px;
+        min-width: 80px;
+        padding: 4px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 6px;
+        margin: 2px 2px;
+    }}
+
+    QDialogButtonBox QPushButton#labelDialogButtons {{
+        min-height: 28px;
+        min-width: 80px;
     }}
 
     QLineEdit#labelInput {{
@@ -803,10 +819,10 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
         color: {fg2}; 
         border: 1px solid {border};
         border-bottom: none; 
-        border-top-left-radius: 8px; 
-        border-top-right-radius: 8px;
-        padding: 8px 18px; 
-        min-width: 90px;
+        border-top-left-radius: 6px; 
+        border-top-right-radius: 6px;
+        padding: 5px 14px; 
+        min-width: 70px;
         margin-right: 2px;
     }}
     
@@ -826,7 +842,43 @@ def _build_modern_theme(bg, bg2, bg3, fg, fg2, acc, acc2, acc3, border, sel_bg, 
     QTabWidget::pane {{ 
         border: 1px solid {border}; 
         background: {bg2};
-        border-radius: 0 8px 8px 8px;
+        border-radius: 0 6px 6px 6px;
+    }}
+
+    /* ===== GROUPBOX ===== */
+    QGroupBox {{
+        color: {acc3};
+        border: 1px solid {border};
+        border-radius: 6px;
+        margin-top: 18px;
+        padding: 10px 8px 8px 8px;
+        font-weight: 600;
+        font-size: 12px;
+    }}
+
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 10px;
+        padding: 0 4px;
+        background: {bg};
+        color: {acc3};
+    }}
+
+    /* ===== FRAME SEPARATORS ===== */
+    QFrame[frameShape="4"],
+    QFrame[frameShape="5"] {{
+        background: {border};
+        border: none;
+        max-height: 1px;
+        max-width: 1px;
+    }}
+
+    /* ===== DIALOG LABEL STYLE ===== */
+    QDialog QLabel {{
+        color: {fg2};
+        font-size: 12px;
+        padding: 1px 0;
     }}
     """
 

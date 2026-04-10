@@ -6,10 +6,10 @@ from math import sin
 try:
     from PyQt5.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QSize
     from PyQt5.QtGui import QColor
-    from PyQt5.QtWidgets import QAction, QGraphicsOpacityEffect, QToolButton
+    from PyQt5.QtWidgets import QAction, QApplication, QGraphicsOpacityEffect, QToolButton
 except ImportError:
     from PyQt4.QtCore import QEasingCurve, QTimer, QSize, QPropertyAnimation
-    from PyQt4.QtGui import QAction, QColor, QGraphicsOpacityEffect, QToolButton
+    from PyQt4.QtGui import QAction, QApplication, QColor, QGraphicsOpacityEffect, QToolButton
 
 from libs.utils import set_icon_preferences
 
@@ -111,7 +111,7 @@ class ThemeController(object):
             QComboBox, QLineEdit, QSpinBox, QPushButton { min-height: 24px; padding: 4px 8px; }
             QDockWidget::title { padding: 8px 10px; }
             """
-        self.window.setStyleSheet(stylesheet)
+        QApplication.instance().setStyleSheet(stylesheet)
         self.window.label_list.setAlternatingRowColors(True)
         self.window.file_list_widget.setAlternatingRowColors(True)
         self.window.label_list.setSpacing(1 if compact_mode else 2)

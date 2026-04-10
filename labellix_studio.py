@@ -61,6 +61,7 @@ from libs.theme_controller import ThemeController
 from libs.training_state_service import TrainingStateService
 from libs.trainDialog import TrainConfigPanel
 from libs.yolo_export_dialog import YOLOExportConfigDialog
+from libs.license_plate_export_dialog import LicensePlateExportConfigDialog
 from libs.training_runner import (
     format_command_for_display,
     infer_run_artifacts,
@@ -78,9 +79,11 @@ def iter_app_icon_candidates():
     root_dir = os.path.dirname(__file__)
     icons_dir = os.path.abspath(os.path.join(root_dir, 'resources', 'icons'))
     packaging_dir = os.path.join(icons_dir, 'packaging')
-    # icon.png at project root is the primary brand icon.
+    resources_dir = os.path.abspath(os.path.join(root_dir, 'resources'))
+    # desktop_icon.png is the primary brand icon.
     # Keep only safe sizes to avoid oversized _NET_WM_ICON payloads on X11.
     candidates = [
+        os.path.join(resources_dir, 'desktop_icon.png'),
         os.path.join(root_dir, 'Futuristic glowing square logo design.png'),
         os.path.join(packaging_dir, 'labellix-icon-256.png'),
         os.path.join(packaging_dir, 'labellix-icon-128.png'),
@@ -127,11 +130,17 @@ def _round_pixmap(pix, radius_fraction=0.18):
 def build_app_icon():
     """Build a multi-resolution app icon for better dock/taskbar support.
 
-    Futuristic glowing square logo design.png is loaded once, scaled to 256x256 to stay within X11 request
+    desktop_icon.png is loaded once, scaled to 256x256 to stay within X11 request
     size limits, rounded corners applied, then smaller sizes are stacked.
     """
     icon = QIcon()
-    root_icon = os.path.join(os.path.dirname(__file__), 'Futuristic glowing square logo design.png')
+    resources_dir = os.path.join(os.path.dirname(__file__), 'resources')
+    root_dir = os.path.dirname(__file__)
+    
+    # Try desktop_icon.png first
+    desktop_icon = os.path.join(resources_dir, 'desktop_icon.png')
+    root_icon = desktop_icon if os.path.exists(desktop_icon) else os.path.join(root_dir, 'Futuristic glowing square logo design.png')
+    
     if os.path.exists(root_icon):
         pix = QPixmap(root_icon)
         if not pix.isNull():
@@ -140,8 +149,8 @@ def build_app_icon():
                 pix = pix.scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             icon.addPixmap(_round_pixmap(pix))
     for icon_path in iter_app_icon_candidates():
-        # Skip Futuristic glowing square logo design.png — already added above at safe size.
-        if os.path.basename(icon_path) == 'Futuristic glowing square logo design.png':
+        # Skip the primary icon — already added above at safe size.
+        if os.path.basename(icon_path) in ('desktop_icon.png', 'Futuristic glowing square logo design.png'):
             continue
         icon.addFile(icon_path)
     if icon.isNull():
@@ -398,7 +407,14 @@ class MainWindow(QMainWindow, WindowMixin):
         self.classification_labels = {}
         self.classification_manifest_path = None
         self.classification_export_dir = ustr(settings.get(SETTING_CLASSIFICATION_EXPORT_DIR, ''))
+        self.classification_dataset_name = ustr(settings.get(SETTING_CLASSIFICATION_DATASET_NAME, 'dataset'))
+        self.classification_export_move_images = bool(settings.get(SETTING_CLASSIFICATION_EXPORT_MOVE, False))
+        self.classification_export_create_zip = bool(settings.get(SETTING_CLASSIFICATION_EXPORT_ZIP, False))
         self.license_plate_export_dir = ustr(settings.get(SETTING_LICENSE_PLATE_EXPORT_DIR, ''))
+        self.license_plate_dataset_name = ustr(settings.get(SETTING_LICENSE_PLATE_DATASET_NAME, 'license_plate_dataset'))
+        self.license_plate_export_move_images = bool(settings.get(SETTING_LICENSE_PLATE_EXPORT_MOVE, False))
+        self.license_plate_export_create_zip = bool(settings.get(SETTING_LICENSE_PLATE_EXPORT_ZIP, False))
+        self.license_plate_export_image_mode = ustr(settings.get(SETTING_LICENSE_PLATE_EXPORT_IMAGE_MODE, 'full'))
         self.yolo_export_dir = ustr(settings.get(SETTING_YOLO_EXPORT_DIR, ''))
         self.last_exported_dataset_yaml = ustr(settings.get(SETTING_YOLO_LAST_DATASET_YAML, ''))
         self.training_worker = None
@@ -410,7 +426,14 @@ class MainWindow(QMainWindow, WindowMixin):
         self.m_img_list = []
         self.dir_name = None
         self.label_hist = []
-        self.predefined_classes_file = default_prefdef_class_file
+        self.detection_predefined_classes_file = ustr(
+            default_prefdef_class_file
+            or os.path.join(os.path.dirname(__file__), 'data', 'predefined_classes.txt')
+        )
+        self.classification_predefined_classes_file = os.path.join(
+            os.path.dirname(__file__), 'data', 'predefined_classes_classification.txt'
+        )
+        self.predefined_classes_file = self.detection_predefined_classes_file
         self.lock_predefined_classes = bool(settings.get(SETTING_LOCK_PREDEFINED_CLASSES, False))
         self.last_open_dir = None
         self.cur_img_idx = 0
@@ -424,7 +447,10 @@ class MainWindow(QMainWindow, WindowMixin):
         self.screencast = "https://youtu.be/p0nR2YsCY_U"
 
         # Load predefined classes to the list
-        self.load_predefined_classes(default_prefdef_class_file)
+        self.load_predefined_classes(self.detection_predefined_classes_file)
+        # Ensure the classification class file exists early.
+        self._read_predefined_classes_file(self.classification_predefined_classes_file)
+        self._cached_detection_label_hist = list(self.label_hist)
         self.base_label_hist = list(self.label_hist)
 
         if self.label_hist:
@@ -484,6 +510,12 @@ class MainWindow(QMainWindow, WindowMixin):
         self.lock_predefined_classes_container.setLayout(lock_row_layout)
         self.edit_button = QToolButton()
         self.edit_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.classification_add_button = QToolButton()
+        self.classification_add_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.classification_rename_button = QToolButton()
+        self.classification_rename_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.classification_remove_button = QToolButton()
+        self.classification_remove_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.classification_assign_button = QToolButton()
         self.classification_assign_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.classification_clear_button = QToolButton()
@@ -493,12 +525,19 @@ class MainWindow(QMainWindow, WindowMixin):
         self.classification_current_label = QLabel('')
         self.classification_progress_label = QLabel('')
 
-        classification_buttons_layout = QHBoxLayout()
+        classification_buttons_layout = QGridLayout()
         classification_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        classification_buttons_layout.setSpacing(8)
-        classification_buttons_layout.addWidget(self.classification_assign_button)
-        classification_buttons_layout.addWidget(self.classification_clear_button)
-        classification_buttons_layout.addWidget(self.classification_export_button)
+        classification_buttons_layout.setHorizontalSpacing(8)
+        classification_buttons_layout.setVerticalSpacing(6)
+        classification_buttons_layout.addWidget(self.classification_add_button, 0, 0)
+        classification_buttons_layout.addWidget(self.classification_rename_button, 0, 1)
+        classification_buttons_layout.addWidget(self.classification_remove_button, 0, 2)
+        classification_buttons_layout.addWidget(self.classification_assign_button, 1, 0)
+        classification_buttons_layout.addWidget(self.classification_clear_button, 1, 1)
+        classification_buttons_layout.addWidget(self.classification_export_button, 1, 2)
+        classification_buttons_layout.setColumnStretch(0, 1)
+        classification_buttons_layout.setColumnStretch(1, 1)
+        classification_buttons_layout.setColumnStretch(2, 1)
         self.classification_buttons_container = QWidget()
         self.classification_buttons_container.setLayout(classification_buttons_layout)
 
@@ -701,11 +740,16 @@ class MainWindow(QMainWindow, WindowMixin):
 
         create_mode = action(get_str('crtBox'), self.set_create_mode,
                              'w', 'new', get_str('crtBoxDetail'), enabled=False)
+        create_mode.setShortcutContext(Qt.ApplicationShortcut)
+        draw_polygon = action('Draw Polygon', self.draw_polygon,
+                              'p', 'new', 'Draw polygon (P key)', enabled=False)
+        draw_polygon.setShortcutContext(Qt.ApplicationShortcut)
         edit_mode = action(get_str('editBox'), self.set_edit_mode,
                            'Ctrl+J', 'edit', get_str('editBoxDetail'), enabled=False)
 
         create = action(get_str('crtBox'), self.create_shape,
                         'w', 'new', get_str('crtBoxDetail'), enabled=False)
+        create.setShortcutContext(Qt.ApplicationShortcut)
         delete = action(get_str('delBox'), self.delete_selected_shape,
                         'Delete', 'delete', get_str('delBoxDetail'), enabled=False)
         copy = action(get_str('dupBox'), self.copy_selected_shape,
@@ -740,12 +784,33 @@ class MainWindow(QMainWindow, WindowMixin):
             None,
             'help',
             get_str('modeShortcutsDetail', 'Show mode switching shortcuts'))
-        assign_class = action(get_str('assignClass'), self.assign_classification_label,
-                      'c', 'edit', get_str('assignClassDetail'), enabled=False)
-        clear_class = action(get_str('clearClass'), self.clear_classification_label,
-                     None, 'delete', get_str('clearClassDetail'), enabled=False)
-        export_classes = action(get_str('exportClasses'), self.export_classification_dataset,
-                    'Ctrl+Shift+E', 'save', get_str('exportClassesDetail'), enabled=False)
+        add_class = action(
+            get_str('addClass', 'Add Class'),
+            self.add_classification_class,
+            'Ctrl+Shift+N',
+            'new',
+            get_str('addClassDetail', 'Add a class to classification labels'),
+            enabled=False)
+        rename_class = action(
+            get_str('renameClass', 'Rename Class'),
+            self.rename_selected_classification_class,
+            'Ctrl+Shift+Y',
+            'edit',
+            get_str('renameClassDetail', 'Rename selected class and update assigned images'),
+            enabled=False)
+        remove_class = action(
+            get_str('removeClass', 'Remove Class'),
+            self.remove_selected_classification_class,
+            'Ctrl+Shift+Delete',
+            'delete',
+            get_str('removeClassDetail', 'Remove selected class from classification labels'),
+            enabled=False)
+        assign_class = action(get_str('assignClass', 'Assign Class'), self.assign_classification_label,
+                  'c', 'edit', get_str('assignClassDetail', 'Assign selected class to current image'), enabled=False)
+        clear_class = action(get_str('clearClass', 'Clear Class'), self.clear_classification_label,
+                 None, 'delete', get_str('clearClassDetail', 'Clear class assignment for current image'), enabled=False)
+        export_classes = action(get_str('exportClasses', 'Export Classes'), self.export_classification_dataset,
+                'Ctrl+Shift+E', 'save', get_str('exportClassesDetail', 'Export classification dataset'), enabled=False)
         export_license_plate_dataset = action(
             get_str('exportLicensePlateDataset', 'Export License Plate Dataset'),
             self.export_license_plate_dataset,
@@ -760,6 +825,9 @@ class MainWindow(QMainWindow, WindowMixin):
 
         for mode_action in (detection_mode, classification_mode, license_plate_mode, segmentation_mode, training_mode):
             mode_action.setShortcutContext(Qt.ApplicationShortcut)
+        add_class.setShortcutContext(Qt.ApplicationShortcut)
+        rename_class.setShortcutContext(Qt.ApplicationShortcut)
+        remove_class.setShortcutContext(Qt.ApplicationShortcut)
         stop_training = action(get_str('stopTraining', 'Stop Training'), self.stop_training_process,
             None, 'cancel', get_str('stopTrainingDetail', 'Stop the active training process'), enabled=False)
         next_unlabeled = action(get_str('nextUnlabeled'), self.open_next_unlabeled_image,
@@ -832,6 +900,9 @@ class MainWindow(QMainWindow, WindowMixin):
                       'Ctrl+E', 'edit', get_str('editLabelDetail'),
                       enabled=False)
         self.edit_button.setDefaultAction(edit)
+        self.classification_add_button.setDefaultAction(add_class)
+        self.classification_rename_button.setDefaultAction(rename_class)
+        self.classification_remove_button.setDefaultAction(remove_class)
         self.classification_assign_button.setDefaultAction(assign_class)
         self.classification_clear_button.setDefaultAction(clear_class)
         self.classification_export_button.setDefaultAction(export_classes)
@@ -897,8 +968,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.actions = Struct(save=save, save_format=save_format, saveAs=save_as, open=open, close=close, resetAll=reset_all, deleteImg=delete_image,
                   verify=verify, lineColor=color1, create=create, delete=delete, edit=edit, copy=copy, undo=undo, redo=redo,
                       nextImage=open_next_image, prevImage=open_prev_image,
-                              createMode=create_mode, editMode=edit_mode, advancedMode=advanced_mode,
-                              detectionMode=detection_mode, classificationMode=classification_mode, assignClass=assign_class, clearClass=clear_class,
+                              createMode=create_mode, drawPolygon=draw_polygon, editMode=edit_mode, advancedMode=advanced_mode,
+                              detectionMode=detection_mode, classificationMode=classification_mode, addClass=add_class, renameClass=rename_class, removeClass=remove_class, assignClass=assign_class, clearClass=clear_class,
                               licensePlateMode=license_plate_mode,
                               segmentationMode=segmentation_mode, trainingMode=training_mode,
                               exportClasses=export_classes, exportLicensePlateDataset=export_license_plate_dataset, exportYOLODataset=export_yolo_dataset,
@@ -917,7 +988,7 @@ class MainWindow(QMainWindow, WindowMixin):
                               beginnerContext=(create, edit, copy, delete),
                               advancedContext=(create_mode, edit_mode, edit, copy,
                                                delete, shape_line_color, shape_fill_color),
-                              segmentationContext=(create_mode, edit_mode, edit, copy,
+                              segmentationContext=(create_mode, draw_polygon, edit_mode, edit, copy,
                                                delete, shape_line_color, shape_fill_color),
                               onLoadActive=(
                                   close, create, create_mode, edit_mode),
@@ -1030,14 +1101,14 @@ class MainWindow(QMainWindow, WindowMixin):
         self.actions.segmentation = (
             open, open_dir, change_save_dir, open_next_image, open_prev_image, verify, save, save_format, None,
             undo, redo, None,
-            create_mode, edit_mode, copy, delete, None,
+            create_mode, draw_polygon, edit_mode, copy, delete, None,
             train_yolov8, stop_training, None,
             hide_all, show_all, None,
             zoom_in, zoom, zoom_out, fit_window, fit_width, None,
             light_brighten, light, light_darken, light_org)
         self.actions.classification = (
             open, open_dir, open_next_image, open_prev_image, next_unlabeled, save, None,
-            assign_class, clear_class, export_classes, None,
+            add_class, rename_class, remove_class, assign_class, clear_class, export_classes, None,
             zoom_in, zoom, zoom_out, fit_window, fit_width, None,
             light_brighten, light, light_darken, light_org)
         self.actions.training = (
@@ -1045,7 +1116,7 @@ class MainWindow(QMainWindow, WindowMixin):
             open, open_dir, save, export_yolo_dataset)
         self.actions.trainingMenu = (stop_training,)
         self.actions.classificationMenu = (
-            assign_class, clear_class, next_unlabeled, None, export_classes)
+            add_class, rename_class, remove_class, assign_class, clear_class, next_unlabeled, None, export_classes)
 
         self.statusBar().showMessage('%s started.' % __appname__)
         self.statusBar().show()
@@ -1720,7 +1791,32 @@ class MainWindow(QMainWindow, WindowMixin):
         if label and label not in self.label_hist:
             self.label_hist.append(label)
             self.label_hist.sort(key=lambda value: value.lower())
+            if not self.is_classification_mode():
+                self._cached_detection_label_hist = list(self.label_hist)
+                self._write_predefined_classes_file(
+                    self.detection_predefined_classes_file,
+                    self.label_hist,
+                )
             self._update_label_history_widgets(preferred_label=label)
+
+    def cache_detection_label_history(self):
+        if not self.is_classification_mode():
+            self._cached_detection_label_hist = list(self.label_hist)
+
+    def restore_detection_label_history(self):
+        self.predefined_classes_file = self.detection_predefined_classes_file
+        latest_predefined = self._read_predefined_classes_file(self.detection_predefined_classes_file)
+        self.base_label_hist = list(latest_predefined)
+
+        if self.is_predefined_classes_lock_enabled():
+            self.label_hist = sorted(self.base_label_hist, key=lambda value: value.lower())
+        else:
+            merged_labels = {trimmed(label) for label in self._cached_detection_label_hist if trimmed(label)}
+            merged_labels.update(self.base_label_hist)
+            self.label_hist = sorted(merged_labels, key=lambda value: value.lower())
+
+        self._update_label_history_widgets(preferred_label=getattr(self, 'default_label', None))
+        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
 
     def toggle_predefined_classes_lock(self, _value=False):
         self.lock_predefined_classes = bool(self.lock_predefined_classes_checkbox.isChecked())
@@ -1775,6 +1871,8 @@ class MainWindow(QMainWindow, WindowMixin):
         return False
 
     def load_classification_manifest(self, source_dir=None):
+        self.predefined_classes_file = self.classification_predefined_classes_file
+        self.base_label_hist = list(self._read_predefined_classes_file(self.classification_predefined_classes_file))
         source_dir = source_dir or self.classification_source_dir()
         self.label_hist = list(self.base_label_hist)
         self.classification_labels = {}
@@ -1864,6 +1962,22 @@ class MainWindow(QMainWindow, WindowMixin):
                 item.setBackground(QBrush())
                 item.setToolTip(self.get_str('classificationNone'))
 
+    def _update_classification_button_style(self):
+        buttons = (
+            self.classification_add_button,
+            self.classification_rename_button,
+            self.classification_remove_button,
+            self.classification_assign_button,
+            self.classification_clear_button,
+            self.classification_export_button,
+        )
+        style = Qt.ToolButtonTextBesideIcon
+        for button in buttons:
+            button.setToolButtonStyle(style)
+            action = button.defaultAction()
+            if action is not None:
+                button.setToolTip(action.text())
+
     def update_classification_ui(self):
         is_classification_mode = self.is_classification_mode()
         is_license_plate_mode = self.is_license_plate_mode()
@@ -1879,6 +1993,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.classification_current_label.setVisible(is_classification_mode)
         self.classification_progress_label.setVisible(is_classification_mode)
         self.classification_buttons_container.setVisible(is_classification_mode)
+        self._update_classification_button_style()
         self.dock.setVisible(not is_training_mode)
         self.file_dock.setVisible(not is_training_mode)
         target_index = 1 if is_training_mode else 0
@@ -1894,6 +2009,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.actions.saveAs.setEnabled((not is_classification_mode) and (not is_training_mode) and bool(self.items_to_shapes))
         self.actions.create.setEnabled((not is_classification_mode) and (not is_training_mode) and has_image)
         self.actions.createMode.setEnabled((not is_classification_mode) and (not is_training_mode) and has_image)
+        self.actions.drawPolygon.setEnabled((not is_classification_mode) and (not is_training_mode) and has_image)
         self.actions.editMode.setEnabled((not is_classification_mode) and (not is_training_mode) and has_image)
         self.actions.delete.setEnabled((not is_classification_mode) and (not is_training_mode) and has_selected_shape)
         self.actions.copy.setEnabled((not is_classification_mode) and (not is_training_mode) and has_selected_shape)
@@ -1901,6 +2017,9 @@ class MainWindow(QMainWindow, WindowMixin):
         self.actions.shapeLineColor.setEnabled((not is_classification_mode) and (not is_training_mode) and has_selected_shape)
         self.actions.shapeFillColor.setEnabled((not is_classification_mode) and (not is_training_mode) and has_selected_shape)
         self.actions.verify.setEnabled((not is_classification_mode) and (not is_training_mode) and has_image)
+        self.actions.addClass.setEnabled(is_classification_mode)
+        self.actions.renameClass.setEnabled(is_classification_mode and self.current_item() is not None)
+        self.actions.removeClass.setEnabled(is_classification_mode and self.current_item() is not None)
         self.actions.assignClass.setEnabled(is_classification_mode and has_image)
         self.actions.clearClass.setEnabled(is_classification_mode and self.current_classification_label() is not None)
         self.actions.exportClasses.setEnabled(is_classification_mode and self.img_count > 0)
@@ -1936,6 +2055,20 @@ class MainWindow(QMainWindow, WindowMixin):
         if not normalized_label:
             return False
 
+        added_new_class = False
+        if normalized_label not in self.label_hist:
+            self.ensure_label_in_history(normalized_label)
+            if normalized_label not in self.base_label_hist:
+                self.base_label_hist.append(normalized_label)
+                self.base_label_hist.sort(key=lambda value: value.lower())
+                added_new_class = True
+
+        if added_new_class:
+            self._write_predefined_classes_file(
+                self.classification_predefined_classes_file,
+                self.base_label_hist,
+            )
+
         assigned_label = self.classification_service.assign_label(
             file_path=self.file_path,
             label=normalized_label,
@@ -1960,6 +2093,75 @@ class MainWindow(QMainWindow, WindowMixin):
         label = self.label_dialog.pop_up(text=current_label)
         if label is not None:
             self.set_classification_label(label)
+
+    def add_classification_class(self, _value=False):
+        if not self.is_classification_mode():
+            return
+
+        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
+        label = self.label_dialog.pop_up(text='')
+        normalized_label = trimmed(label) if label is not None else ''
+        if not normalized_label:
+            return
+
+        if normalized_label not in self.label_hist:
+            self.label_hist.append(normalized_label)
+            self.label_hist.sort(key=lambda value: value.lower())
+        if normalized_label not in self.base_label_hist:
+            self.base_label_hist.append(normalized_label)
+            self.base_label_hist.sort(key=lambda value: value.lower())
+
+        self._write_predefined_classes_file(
+            self.classification_predefined_classes_file,
+            self.base_label_hist,
+        )
+        self._update_label_history_widgets(preferred_label=normalized_label)
+        self.set_dirty()
+        self.update_classification_ui()
+        self.save_file()
+
+    def rename_selected_classification_class(self, _value=False):
+        if not self.is_classification_mode():
+            return
+
+        item = self.current_item()
+        if not item:
+            return
+
+        old_label = trimmed(item.text())
+        if not old_label:
+            return
+
+        self.label_dialog = LabelDialog(parent=self, list_item=self.label_hist)
+        new_label = self.label_dialog.pop_up(text=old_label)
+        new_label = trimmed(new_label) if new_label is not None else ''
+        if not new_label or new_label == old_label:
+            return
+
+        if new_label in self.label_hist:
+            self.error_message(
+                self.get_str('classificationManifestError'),
+                self.get_str('classificationInvalidClass')
+            )
+            return
+
+        self.label_hist = [new_label if trimmed(label) == old_label else label for label in self.label_hist]
+        self.base_label_hist = [new_label if trimmed(label) == old_label else label for label in self.base_label_hist]
+        self.label_hist = sorted({trimmed(label) for label in self.label_hist if trimmed(label)}, key=lambda value: value.lower())
+        self.base_label_hist = sorted({trimmed(label) for label in self.base_label_hist if trimmed(label)}, key=lambda value: value.lower())
+
+        for image_path, class_label in list(self.classification_labels.items()):
+            if trimmed(class_label) == old_label:
+                self.classification_labels[image_path] = new_label
+
+        self._write_predefined_classes_file(
+            self.classification_predefined_classes_file,
+            self.base_label_hist,
+        )
+        self._update_label_history_widgets(preferred_label=new_label)
+        self.set_dirty()
+        self.update_classification_ui()
+        self.save_file()
 
     def clear_classification_label(self, _value=False):
         if not self.is_classification_mode() or not self.file_path:
@@ -1996,46 +2198,61 @@ class MainWindow(QMainWindow, WindowMixin):
             self.error_message(self.get_str('classificationExportError'), self.get_str('classificationExportBlocked'))
             return
 
-        default_dir = self.classification_export_dir or self.classification_source_dir() or '.'
-        export_dir = ustr(QFileDialog.getExistingDirectory(
+        source_dir = self.classification_source_dir()
+        default_dir = self.classification_export_dir or source_dir or '.'
+        strings = {
+            'browse': self.get_str('browse', 'Browse'),
+            'exportDir': self.get_str('exportDir', 'Export folder'),
+            'datasetName': self.get_str('datasetFolderName', 'Dataset folder name'),
+            'transferMode': self.get_str('transferMode', 'Transfer mode'),
+            'copyMode': self.get_str('copyMode', 'Copy'),
+            'moveMode': self.get_str('moveMode', 'Move'),
+            'zip': self.get_str('createZipAfterExport', 'Create zip after export'),
+            'chooseExportDirTitle': self.get_str('chooseExportDirTitle', 'Choose export folder'),
+            'missingExportDir': self.get_str('missingExportDir', 'Please choose an export folder.'),
+            'invalidExportDir': self.get_str('invalidExportDir', 'Export folder does not exist.'),
+            'missingDatasetName': self.get_str('missingDatasetName', 'Please enter dataset folder name.'),
+        }
+        dialog = LicensePlateExportConfigDialog(
             self,
-            '%s - %s' % (__appname__, self.get_str('exportClasses')),
-            default_dir,
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks))
-
-        if not export_dir:
+            title=self.get_str('exportClasses', 'Export Classification Dataset'),
+            defaults={
+                'export_dir': default_dir,
+                'dataset_name': self.classification_dataset_name or 'dataset',
+                'transfer_mode': 'move' if self.classification_export_move_images else 'copy',
+                'create_zip': self.classification_export_create_zip,
+            },
+            strings=strings,
+        )
+        config = dialog.get_config()
+        if not config:
             return
 
-        dataset_name, ok = QInputDialog.getText(
-            self,
-            self.get_str('exportClasses'),
-            self.get_str('datasetFolderName'),
-            text='dataset')
-        dataset_name = trimmed(dataset_name)
-        if not ok or not dataset_name:
-            return
+        export_dir = config.get('export_dir', '')
+        dataset_name = config.get('dataset_name', '')
+        move_images = bool(config.get('move_images', False))
+        create_zip = bool(config.get('create_zip', False))
+
+        self.classification_export_move_images = move_images
+        self.classification_export_create_zip = create_zip
+        self.classification_dataset_name = dataset_name
+        self.settings[SETTING_CLASSIFICATION_EXPORT_MOVE] = move_images
+        self.settings[SETTING_CLASSIFICATION_EXPORT_ZIP] = create_zip
+        self.settings[SETTING_CLASSIFICATION_DATASET_NAME] = dataset_name
 
         dataset_root = os.path.join(export_dir, dataset_name)
-
-        source_dir = self.classification_source_dir()
         session = self.classification_service.build_export_session(
             source_dir=source_dir,
             label_hist=self.label_hist,
             classification_labels=self.classification_labels,
         )
         try:
-            session.export_dataset(dataset_root, move_images=True)
+            session.export_dataset(dataset_root, move_images=move_images)
         except ClassificationIOError as e:
             self.error_message(self.get_str('classificationExportError'), u'<b>%s</b>' % e)
             return
 
-        zip_question = QMessageBox.question(
-            self,
-            self.get_str('exportClasses'),
-            self.get_str('exportZipQuestion'),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No)
-        if zip_question == QMessageBox.Yes:
+        if create_zip:
             try:
                 shutil.make_archive(dataset_root, 'zip', os.path.dirname(dataset_root), os.path.basename(dataset_root))
             except Exception as e:
@@ -2062,39 +2279,54 @@ class MainWindow(QMainWindow, WindowMixin):
             return
 
         default_dir = self.license_plate_export_dir or source_dir or '.'
-        export_dir = ustr(QFileDialog.getExistingDirectory(
+        strings = {
+            'browse': self.get_str('browse', 'Browse'),
+            'exportDir': self.get_str('exportDir', 'Export folder'),
+            'datasetName': self.get_str('datasetFolderName', 'Dataset folder name'),
+            'transferMode': self.get_str('licensePlateTransferModeLabel', 'Transfer mode'),
+            'imageMode': self.get_str('licensePlateImageModeLabel', 'Image export mode'),
+            'imageModeCropped': self.get_str('licensePlateImageModeCropped', 'Cropped plates only'),
+            'imageModeFull': self.get_str('licensePlateImageModeFull', 'Full image + labels'),
+            'copyMode': self.get_str('copyMode', 'Copy'),
+            'moveMode': self.get_str('moveMode', 'Move'),
+            'zip': self.get_str('createZipAfterExport', 'Create zip after export'),
+            'chooseExportDirTitle': self.get_str('chooseExportDirTitle', 'Choose export folder'),
+            'missingExportDir': self.get_str('missingExportDir', 'Please choose an export folder.'),
+            'invalidExportDir': self.get_str('invalidExportDir', 'Export folder does not exist.'),
+            'missingDatasetName': self.get_str('missingDatasetName', 'Please enter dataset folder name.'),
+        }
+        dialog = LicensePlateExportConfigDialog(
             self,
-            '%s - %s' % (__appname__, self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset')),
-            default_dir,
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks))
-        if not export_dir:
+            title=self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset'),
+            defaults={
+                'export_dir': default_dir,
+                'dataset_name': self.license_plate_dataset_name or 'license_plate_dataset',
+                'transfer_mode': 'move' if self.license_plate_export_move_images else 'copy',
+                'create_zip': self.license_plate_export_create_zip,
+                'show_image_mode': True,
+                'image_mode': self.license_plate_export_image_mode or 'full',
+            },
+            strings=strings,
+        )
+        config = dialog.get_config()
+        if not config:
             return
 
-        dataset_name, ok = QInputDialog.getText(
-            self,
-            self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset'),
-            self.get_str('datasetFolderName'),
-            text='license_plate_dataset')
-        dataset_name = trimmed(dataset_name)
-        if not ok or not dataset_name:
-            return
+        export_dir = config.get('export_dir', '')
+        dataset_name = config.get('dataset_name', '')
+        move_images = bool(config.get('move_images', False))
+        create_zip = bool(config.get('create_zip', False))
+        image_mode = ustr(config.get('image_mode', 'full'))
+        crop_plates_only = image_mode != 'full'
 
-        transfer_box = QMessageBox(self)
-        transfer_box.setWindowTitle(self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset'))
-        transfer_box.setText(self.get_str(
-            'licensePlateTransferMode',
-            'Choose export mode: Copy keeps source files, Move relocates source files.'))
-        copy_button = transfer_box.addButton(self.get_str('copyMode', 'Copy'), QMessageBox.AcceptRole)
-        move_button = transfer_box.addButton(self.get_str('moveMode', 'Move'), QMessageBox.DestructiveRole)
-        transfer_box.addButton(QMessageBox.Cancel)
-        transfer_box.exec_()
-        clicked = transfer_box.clickedButton()
-        if clicked == copy_button:
-            move_images = False
-        elif clicked == move_button:
-            move_images = True
-        else:
-            return
+        self.license_plate_export_move_images = move_images
+        self.license_plate_export_create_zip = create_zip
+        self.license_plate_dataset_name = dataset_name
+        self.license_plate_export_image_mode = image_mode
+        self.settings[SETTING_LICENSE_PLATE_EXPORT_MOVE] = move_images
+        self.settings[SETTING_LICENSE_PLATE_EXPORT_ZIP] = create_zip
+        self.settings[SETTING_LICENSE_PLATE_DATASET_NAME] = dataset_name
+        self.settings[SETTING_LICENSE_PLATE_EXPORT_IMAGE_MODE] = image_mode
 
         dataset_root = os.path.join(export_dir, dataset_name)
         session = LicensePlateDatasetSession(source_dir=source_dir)
@@ -2104,27 +2336,13 @@ class MainWindow(QMainWindow, WindowMixin):
                 image_paths=self.m_img_list,
                 move_images=move_images,
                 skip_unlabeled=True,
+                crop_plates_only=crop_plates_only,
             )
         except LicensePlateIOError as e:
             self.error_message(self.get_str('licensePlateExportError', 'License plate export error'), u'<b>%s</b>' % e)
             return
 
-        summary = self.get_str('licensePlateExportSummary',
-                               'Exported pairs: %d\nSkipped unlabeled: %d\nMode: %s\nDataset: %s') % (
-            result.get('exported_count', 0),
-            result.get('skipped_unlabeled', 0),
-            self.get_str('moveMode', 'Move') if move_images else self.get_str('copyMode', 'Copy'),
-            result.get('output_dir', dataset_root),
-        )
-        QMessageBox.information(self, self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset'), summary)
-
-        zip_question = QMessageBox.question(
-            self,
-            self.get_str('exportLicensePlateDataset', 'Export License Plate Dataset'),
-            self.get_str('exportZipQuestion', 'Create a .zip file for the exported dataset?'),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No)
-        if zip_question == QMessageBox.Yes:
+        if create_zip:
             try:
                 shutil.make_archive(dataset_root, 'zip', os.path.dirname(dataset_root), os.path.basename(dataset_root))
             except Exception as e:
@@ -2133,7 +2351,11 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.license_plate_export_dir = export_dir
         self.settings[SETTING_LICENSE_PLATE_EXPORT_DIR] = export_dir
-        self.status(self.get_str('licensePlateExportDone', 'License plate dataset export completed.'))
+        self.status('%s (%d exported, %d skipped)' % (
+            self.get_str('licensePlateExportDone', 'License plate dataset export completed.'),
+            result.get('exported_count', 0),
+            result.get('skipped_unlabeled', 0),
+        ))
 
         if move_images:
             self.set_clean()
@@ -2709,8 +2931,9 @@ class MainWindow(QMainWindow, WindowMixin):
         self.canvas.set_editing(True)
         self.populate_mode_actions()
         self.edit_button.setVisible(not value)
-        if value:
+        if value: 
             self.actions.createMode.setEnabled(True)
+            self.actions.drawPolygon.setEnabled(True)
             self.actions.editMode.setEnabled(False)
             self.dock.setFeatures(self.dock.features() | self.dock_features)
         else:
@@ -2891,16 +3114,21 @@ class MainWindow(QMainWindow, WindowMixin):
     def toggle_draw_mode(self, edit=True):
         self.canvas.set_editing(edit)
         self.actions.createMode.setEnabled(edit)
+        self.actions.drawPolygon.setEnabled(edit)
         self.actions.editMode.setEnabled(not edit)
 
     def set_create_mode(self):
-        assert self.advanced()
         self.toggle_draw_mode(False)
 
     def set_edit_mode(self):
-        assert self.advanced()
         self.toggle_draw_mode(True)
         self.label_selection_changed()
+
+    def draw_polygon(self):
+        """Enable polygon drawing mode (P key)"""
+        # Temporarily set segmentation mode to enable polygon drawing
+        self.canvas.set_segmentation_mode(True)
+        self.toggle_draw_mode(False)
 
     def update_file_menu(self):
         curr_file_path = self.file_path
@@ -2947,6 +3175,7 @@ class MainWindow(QMainWindow, WindowMixin):
             text = trimmed(text)
             if not self._validate_label_against_lock(text):
                 return
+            self.ensure_label_in_history(text)
             item.setText(text)
             item.setBackground(generate_color_by_text(text))
             self.set_dirty()
@@ -3503,6 +3732,7 @@ class MainWindow(QMainWindow, WindowMixin):
         if self.canvas and not self.image.isNull()\
            and self.zoom_mode != self.MANUAL_ZOOM:
             self.adjust_scale()
+        self._update_classification_button_style()
         super(MainWindow, self).resizeEvent(event)
 
     def paint_canvas(self):
@@ -4000,12 +4230,46 @@ class MainWindow(QMainWindow, WindowMixin):
             self.set_dirty()
 
     def delete_selected_shape(self):
+        if self.is_classification_mode():
+            self.remove_selected_classification_class()
+            return
         self.remove_label(self.canvas.delete_selected())
         self.set_dirty()
         self._capture_history_state(clear_redo=True)
         if self.no_shapes():
             for action in self.actions.onShapesPresent:
                 action.setEnabled(False)
+
+    def remove_selected_classification_class(self):
+        if not self.is_classification_mode():
+            return
+
+        item = self.current_item()
+        if not item:
+            return
+
+        target_label = trimmed(item.text())
+        if not target_label:
+            return
+
+        self.label_hist = [label for label in self.label_hist if trimmed(label) != target_label]
+        self.base_label_hist = [label for label in self.base_label_hist if trimmed(label) != target_label]
+
+        changed = False
+        for image_path, class_label in list(self.classification_labels.items()):
+            if trimmed(class_label) == target_label:
+                del self.classification_labels[image_path]
+                changed = True
+
+        self._write_predefined_classes_file(
+            self.classification_predefined_classes_file,
+            self.base_label_hist,
+        )
+        self._update_label_history_widgets(preferred_label=getattr(self, 'default_label', None))
+        self.set_dirty()
+        self.update_classification_ui()
+        if changed or self.classification_manifest_path:
+            self.save_file()
 
     def choose_shape_line_color(self):
         color = self.color_dialog.getColor(self.line_color, u'Choose Line Color',
@@ -4047,8 +4311,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.predefined_classes_file = predef_classes_file
         self.label_hist.extend(self._read_predefined_classes_file())
 
-    def _read_predefined_classes_file(self):
-        predef_classes_file = ustr(getattr(self, 'predefined_classes_file', '') or '')
+    def _read_predefined_classes_file(self, predef_classes_file=None):
+        predef_classes_file = ustr(predef_classes_file or getattr(self, 'predefined_classes_file', '') or '')
         if not predef_classes_file:
             return []
 
@@ -4071,6 +4335,28 @@ class MainWindow(QMainWindow, WindowMixin):
                 seen.add(line)
                 labels.append(line)
         return labels
+
+    def _write_predefined_classes_file(self, predef_classes_file, labels):
+        predef_classes_file = ustr(predef_classes_file or '')
+        if not predef_classes_file:
+            return
+
+        predef_dir = os.path.dirname(predef_classes_file)
+        if predef_dir and (not os.path.isdir(predef_dir)):
+            os.makedirs(predef_dir)
+
+        normalized = []
+        seen = set()
+        for label in labels or []:
+            value = trimmed(label)
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+
+        with codecs.open(predef_classes_file, 'w', 'utf8') as handle:
+            for value in normalized:
+                handle.write(value + '\n')
 
     def load_pascal_xml_by_filename(self, xml_path):
         if self.file_path is None:

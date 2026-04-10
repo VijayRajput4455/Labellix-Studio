@@ -397,7 +397,7 @@ class TrainConfigPanel(QWidget):
             'QPushButton:disabled { background: %s; color: %s; border-color: %s; }' % (bg, border, border) +
 
             # Dialog button bar
-            'QDialogButtonBox QPushButton { min-width: 160px; padding: 11px 24px; font-size: 14px; }' +
+            'QDialogButtonBox QPushButton { min-width: 90px; min-height: 28px; padding: 4px 16px; font-size: 13px; }' +
 
             # Scrollbar
             'QScrollBar:vertical { background: %s; width: 8px; margin: 0; }' % bg +

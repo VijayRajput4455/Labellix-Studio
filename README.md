@@ -1,10 +1,6 @@
 ![Labellix Studio](resources/Labellix_logo.png)
 
 <p align="center">
-   <img src="resources/icons/packaging/labellix-icon-128.png" alt="Labellix App Icon" width="88" />
-</p>
-
-<p align="center">
    <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=20&pause=1200&color=00B8D4&center=true&vCenter=true&width=900&lines=Multi-Mode+Desktop+Annotation+Suite;Detection+%7C+Segmentation+%7C+Classification+%7C+License+Plate;Export+Ready+Datasets+with+Validation+and+Training+Workflow" alt="Labellix animated intro" />
 </p>
 

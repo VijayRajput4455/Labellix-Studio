@@ -164,6 +164,11 @@ class ModeController(object):
         if was_classification:
             self._reset_label_dialog_after_classification()
 
+        if self.window.is_license_plate_mode():
+            self.window.load_license_plate_label_history()
+        else:
+            self.window.restore_detection_label_history()
+
         self.populate_mode_actions()
         if self.window.file_path:
             self.window.load_file(self.window.file_path)

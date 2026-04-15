@@ -563,7 +563,8 @@ python -m unittest discover -s tests -p "test_*.py"
 3. ❌ License plate TXT load issues:
    Ensure rows follow: `plate_text xmin ymin xmax ymax`.
 4. ❌ Qt plugin/xcb startup issue on Linux:
-   Run with `QT_QPA_PLATFORM=xcb python3 labellix_studio.py`.
+   Startup now auto-configures PyQt plugin paths and defaults to `xcb` on Wayland sessions.
+   If you want native Wayland, run with `QT_QPA_PLATFORM=wayland python3 labellix_studio.py`.
 5. ❌ Settings/state feels stale:
    Use reset options and restart the app.
 

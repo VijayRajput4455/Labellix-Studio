@@ -1,3 +1,40 @@
+import importlib.util
+import os
+import sys
+
+
+def _configure_qt_runtime_env():
+    """Ensure Qt resolves platform plugins from PyQt5 instead of cv2 on Linux."""
+    if not sys.platform.startswith('linux'):
+        return
+
+    # On Wayland sessions, default to xcb unless user explicitly opts in.
+    if os.environ.get('XDG_SESSION_TYPE') == 'wayland' and 'QT_QPA_PLATFORM' not in os.environ:
+        os.environ['QT_QPA_PLATFORM'] = 'xcb'
+
+    spec = importlib.util.find_spec('PyQt5')
+    if not spec or not spec.submodule_search_locations:
+        return
+
+    pyqt5_dir = spec.submodule_search_locations[0]
+    qt_plugin_root = os.path.join(pyqt5_dir, 'Qt5', 'plugins')
+    qt_platform_plugins = os.path.join(qt_plugin_root, 'platforms')
+    if not os.path.isdir(qt_platform_plugins):
+        return
+
+    current_platform_path = os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH', '')
+    if not current_platform_path or 'cv2' in current_platform_path:
+        os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_platform_plugins
+
+    plugin_paths = [p for p in os.environ.get('QT_PLUGIN_PATH', '').split(os.pathsep) if p]
+    plugin_paths = [p for p in plugin_paths if 'cv2' not in p]
+    if qt_plugin_root not in plugin_paths:
+        plugin_paths.insert(0, qt_plugin_root)
+    os.environ['QT_PLUGIN_PATH'] = os.pathsep.join(plugin_paths)
+
+
+_configure_qt_runtime_env()
+
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton
 # Custom dialog for FPS selection and live frame estimation
 class FrameExtractDialog(QDialog):
@@ -54,7 +91,6 @@ import os.path
 import platform
 import shutil
 import subprocess
-import sys
 import time
 import webbrowser as wb
 from functools import partial
@@ -80,7 +116,6 @@ from libs.resources import *
 from libs.constants import *
 from styletheame import THEMES, PALETTES
 from libs.utils import *
-from libs.video_frame_extractor import VideoFrameExtractor
 from libs.settings import Settings
 from libs.shape import Shape, DEFAULT_LINE_COLOR, DEFAULT_FILL_COLOR
 from libs.stringBundle import StringBundle
@@ -2779,6 +2814,70 @@ class MainWindow(QMainWindow, WindowMixin, ExportWorkflowsMixin, TrainingWorkflo
         natural_sort(images, key=lambda x: x.lower())
         return images
 
+    def scan_all_videos(self, folder_path):
+        video_extensions = ('.mp4', '.avi', '.mov', '.mkv')
+        videos = []
+
+        for root, _dirs, files in os.walk(folder_path):
+            for file in files:
+                if file.lower().endswith(video_extensions):
+                    relative_path = os.path.join(root, file)
+                    path = ustr(os.path.abspath(relative_path))
+                    videos.append(path)
+        natural_sort(videos, key=lambda x: x.lower())
+        return videos
+
+    def _start_video_extraction(self, video_paths):
+        if not video_paths:
+            return
+
+        from libs.video_frame_extractor import VideoFrameExtractor
+        for video_path in video_paths:
+            dlg = FrameExtractDialog(video_path, self)
+            if dlg.exec_() != QDialog.Accepted:
+                continue
+            fps = dlg.fps
+            output_dir = os.path.dirname(video_path)
+            self.statusBar().showMessage(f'Starting frame extraction for {os.path.basename(video_path)}...')
+            extractor = VideoFrameExtractor(video_path, output_dir, frames_per_sec=fps, parent=self)
+            progress_dialog = QProgressDialog(f"Extracting frames from {os.path.basename(video_path)}...", "Cancel", 0, 100, self)
+            progress_dialog.setWindowModality(Qt.ApplicationModal)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.setValue(0)
+            progress_dialog.setAutoClose(False)
+            progress_dialog.setAutoReset(False)
+            progress_dialog.show()
+            self.video_progress_dialogs[video_path] = progress_dialog
+
+            def on_progress(cur, total, vp=video_path):
+                progress = self.video_progress_dialogs.get(vp)
+                if progress:
+                    percent = int((cur / total) * 100) if total > 0 else 0
+                    progress.setValue(percent)
+                    progress.setLabelText(f"Extracting frames from {os.path.basename(vp)}... ({cur}/{total})")
+
+            extractor.progress.connect(on_progress)
+
+            def on_cancel(vp=video_path):
+                extractor.stop()
+                progress = self.video_progress_dialogs.pop(vp, None)
+                if progress:
+                    progress.close()
+                self.statusBar().showMessage(f'Extraction cancelled for {os.path.basename(vp)}.')
+
+            progress_dialog.canceled.connect(on_cancel)
+            extractor.finished.connect(self.on_video_extraction_finished)
+            extractor.start()
+
+    def _load_directory_media(self, target_dir_path):
+        self.last_open_dir = target_dir_path
+        self.import_dir_images(target_dir_path)
+        self.default_save_dir = target_dir_path
+        if self.file_path:
+            self.show_bounding_box_from_annotation_file(file_path=self.file_path)
+        videos = self.scan_all_videos(target_dir_path)
+        self._start_video_extraction(videos)
+
     def change_save_dir_dialog(self, _value=False):
         if self.default_save_dir is not None:
             path = ustr(self.default_save_dir)
@@ -2838,73 +2937,25 @@ class MainWindow(QMainWindow, WindowMixin, ExportWorkflowsMixin, TrainingWorkflo
             default_open_dir_path = os.path.dirname(self.file_path) if self.file_path else '.'
 
         if silent != True:
-            image_formats = ['*.%s' % fmt.data().decode('ascii').lower() for fmt in QImageReader.supportedImageFormats()]
-            video_formats = ['*.mp4', '*.avi', '*.mov', '*.mkv']
-            filters = 'Image/Video files (%s %s);;All files (*)' % (' '.join(image_formats), ' '.join(video_formats))
-            selected_files, _selected_filter = QFileDialog.getOpenFileNames(
-                self,
-                '%s - Open Directory or Video' % __appname__,
-                default_open_dir_path,
-                filters,
-            )
-            selected_files = [ustr(f) for f in selected_files if f]
-            if not selected_files:
+            # Use a non-native directory dialog so users can see files while choosing a folder.
+            dir_dialog = QFileDialog(self, '%s - Open Folder' % __appname__, default_open_dir_path)
+            dir_dialog.setFileMode(QFileDialog.Directory)
+            dir_dialog.setOption(QFileDialog.ShowDirsOnly, False)
+            dir_dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+            dir_dialog.setOption(QFileDialog.DontResolveSymlinks, True)
+            target_dir_path = ''
+            if dir_dialog.exec_():
+                selected = dir_dialog.selectedFiles()
+                if selected:
+                    target_dir_path = ustr(selected[0])
+            if not target_dir_path:
                 return
-            # Separate images and videos
-            image_exts = tuple([fmt.replace('*.', '').lower() for fmt in image_formats])
-            video_exts = tuple([fmt.replace('*.', '').lower() for fmt in video_formats])
-            images = [f for f in selected_files if f.lower().endswith(image_exts)]
-            videos = [f for f in selected_files if f.lower().endswith(video_exts)]
-            if images:
-                target_dir_path = os.path.dirname(images[0])
-                self.last_open_dir = target_dir_path
-                self.import_dir_images(target_dir_path)
-                self.default_save_dir = target_dir_path
-                if self.file_path:
-                    self.show_bounding_box_from_annotation_file(file_path=self.file_path)
-            if videos:
-                for video_path in videos:
-                    dlg = FrameExtractDialog(video_path, self)
-                    if dlg.exec_() != QDialog.Accepted:
-                        continue
-                    fps = dlg.fps
-                    output_dir = os.path.dirname(video_path)
-                    self.statusBar().showMessage(f'Starting frame extraction for {os.path.basename(video_path)}...')
-                    extractor = VideoFrameExtractor(video_path, output_dir, frames_per_sec=fps, parent=self)
-                    # Progress dialog
-                    progress_dialog = QProgressDialog(f"Extracting frames from {os.path.basename(video_path)}...", "Cancel", 0, 100, self)
-                    progress_dialog.setWindowModality(Qt.ApplicationModal)
-                    progress_dialog.setMinimumDuration(0)
-                    progress_dialog.setValue(0)
-                    progress_dialog.setAutoClose(False)
-                    progress_dialog.setAutoReset(False)
-                    progress_dialog.show()
-                    self.video_progress_dialogs[video_path] = progress_dialog
-                    def on_progress(cur, total, vp=video_path):
-                        dlg = self.video_progress_dialogs.get(vp)
-                        if dlg:
-                            percent = int((cur / total) * 100) if total > 0 else 0
-                            dlg.setValue(percent)
-                            dlg.setLabelText(f"Extracting frames from {os.path.basename(vp)}... ({cur}/{total})")
-                    extractor.progress.connect(on_progress)
-                    def on_cancel():
-                        extractor.stop()
-                        dlg = self.video_progress_dialogs.pop(video_path, None)
-                        if dlg:
-                            dlg.close()
-                        self.statusBar().showMessage(f'Extraction cancelled for {os.path.basename(video_path)}.')
-                    progress_dialog.canceled.connect(on_cancel)
-                    extractor.finished.connect(self.on_video_extraction_finished)
-                    extractor.start()
+            self._load_directory_media(target_dir_path)
         else:
             target_dir_path = ustr(default_open_dir_path)
             if not target_dir_path:
                 return
-            self.last_open_dir = target_dir_path
-            self.import_dir_images(target_dir_path)
-            self.default_save_dir = target_dir_path
-            if self.file_path:
-                self.show_bounding_box_from_annotation_file(file_path=self.file_path)
+            self._load_directory_media(target_dir_path)
 
     def on_video_extraction_finished(self, video_path, frame_count):
         # Close progress dialog if open
@@ -2913,6 +2964,8 @@ class MainWindow(QMainWindow, WindowMixin, ExportWorkflowsMixin, TrainingWorkflo
             dlg.setValue(100)
             dlg.close()
         self.statusBar().showMessage(f'Extracted {frame_count} frames from {os.path.basename(video_path)}.')
+        if frame_count > 0 and self.last_open_dir and os.path.isdir(self.last_open_dir):
+            self.import_dir_images(self.last_open_dir)
         # Prompt to delete video
         reply = QMessageBox.question(self, 'Delete Video?', f'Delete original video file {os.path.basename(video_path)}? (Default: Yes)',
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
